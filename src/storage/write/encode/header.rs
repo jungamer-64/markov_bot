@@ -1,9 +1,9 @@
 use super::super::super::{
     CHECKSUM_PLACEHOLDER, CompiledStorage, DynError, FLAGS, HEADER_SIZE, Header, MAGIC,
     NORMALIZATION_FLAGS, PAIR2_RECORD_SIZE, PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE,
-    PREFIX2_RECORD_SIZE,
-    PREFIX3_RECORD_SIZE, START_RECORD_SIZE, SectionCounts, SectionSizes, TOKENIZER_VERSION,
-    VERSION, align_to_eight, bytes_for_len, checked_add, u32_from_usize, u64_from_usize,
+    PREFIX2_RECORD_SIZE, PREFIX3_RECORD_SIZE, START_RECORD_SIZE, SectionCounts, SectionSizes,
+    TOKENIZER_VERSION, VERSION, align_to_eight, bytes_for_len, checked_add, u32_from_usize,
+    u64_from_usize,
 };
 
 pub(super) fn build_header(compiled: &CompiledStorage) -> Result<Header, DynError> {
@@ -153,7 +153,11 @@ fn section_sizes(compiled: &CompiledStorage) -> Result<SectionSizes, DynError> {
             super::super::super::EDGE_RECORD_SIZE,
             "model3 edges",
         )?,
-        model2_pairs: bytes_for_len(compiled.model2_pairs.len(), PAIR2_RECORD_SIZE, "model2 pairs")?,
+        model2_pairs: bytes_for_len(
+            compiled.model2_pairs.len(),
+            PAIR2_RECORD_SIZE,
+            "model2 pairs",
+        )?,
         model2_prefixes: bytes_for_len(
             compiled.model2_prefixes.len(),
             PREFIX2_RECORD_SIZE,

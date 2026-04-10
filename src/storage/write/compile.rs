@@ -1,5 +1,5 @@
 use super::super::{
-    CompiledStorage, DynError, MarkovChain, u32_from_usize, validate_special_tokens,
+    CompiledStorage, Count, DynError, MarkovChain, u32_from_usize, validate_special_tokens,
 };
 
 mod index;
@@ -18,7 +18,26 @@ type ModelSections = (
     Vec<super::super::EdgeRecord>,
 );
 
-pub(super) fn compile_chain(chain: &MarkovChain) -> Result<CompiledStorage, DynError> {
+#[derive(Debug, Clone, Copy)]
+struct CompilePolicy {
+    min_edge_count: Count,
+}
+
+pub(super) fn compile_chain(
+    chain: &MarkovChain,
+    min_edge_count: Count,
+) -> Result<CompiledStorage, DynError> {
+    compile_chain_with_policy(chain, CompilePolicy { min_edge_count })
+}
+
+fn compile_chain_with_policy(
+    chain: &MarkovChain,
+    policy: CompilePolicy,
+) -> Result<CompiledStorage, DynError> {
+    if policy.min_edge_count == 0 {
+        return Err("min_edge_count must be greater than zero".into());
+    }
+
     validate_special_tokens(chain.id_to_token.as_slice())?;
     index::validate_token_index(chain)?;
 
@@ -34,7 +53,7 @@ pub(super) fn compile_chain(chain: &MarkovChain) -> Result<CompiledStorage, DynE
         model2_edges,
         model1_prefixes,
         model1_edges,
-    ) = build_models(chain, token_count)?;
+    ) = build_models(chain, token_count, policy)?;
 
     Ok(CompiledStorage {
         vocab_offsets,
@@ -51,12 +70,18 @@ pub(super) fn compile_chain(chain: &MarkovChain) -> Result<CompiledStorage, DynE
     })
 }
 
-fn build_models(chain: &MarkovChain, token_count: u32) -> Result<ModelSections, DynError> {
+fn build_models(
+    chain: &MarkovChain,
+    token_count: u32,
+    policy: CompilePolicy,
+) -> Result<ModelSections, DynError> {
     let (model3_pairs, model3_prefixes, model3_edges, prefix_to_id) =
-        model::build_model3(chain, token_count)?;
+        model::build_model3(chain, token_count, policy.min_edge_count)?;
     let starts = model::build_starts(chain, &prefix_to_id)?;
-    let (model2_pairs, model2_prefixes, model2_edges) = model::build_model2(chain, token_count)?;
-    let (model1_prefixes, model1_edges) = model::build_model1(chain, token_count)?;
+    let (model2_pairs, model2_prefixes, model2_edges) =
+        model::build_model2(chain, token_count, policy.min_edge_count)?;
+    let (model1_prefixes, model1_edges) =
+        model::build_model1(chain, token_count, policy.min_edge_count)?;
 
     Ok((
         model3_pairs,

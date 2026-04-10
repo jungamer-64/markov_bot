@@ -9,6 +9,8 @@ use super::{
     compute_checksum, load_chain, save_chain,
 };
 
+const TEST_MIN_EDGE_COUNT: u64 = 1;
+
 const VERSION_OFFSET: usize = 8;
 const FLAGS_OFFSET: usize = 12;
 const TOKENIZER_VERSION_OFFSET: usize = 16;
@@ -49,7 +51,7 @@ async fn save_and_load_roundtrip() {
         .train_tokens(&["a".to_owned()])
         .expect("training should succeed");
 
-    save_chain(&file_path, &chain)
+    save_chain(&file_path, &chain, TEST_MIN_EDGE_COUNT)
         .await
         .expect("save should succeed");
     let loaded = load_chain(&file_path).await.expect("load should succeed");
@@ -391,7 +393,7 @@ fn sample_chain() -> MarkovChain {
 
 async fn write_sample_file(prefix: &str, chain: &MarkovChain) -> TempPath {
     let file_path = temp_file_path(prefix);
-    save_chain(&file_path, chain)
+    save_chain(&file_path, chain, TEST_MIN_EDGE_COUNT)
         .await
         .expect("save should succeed");
     file_path

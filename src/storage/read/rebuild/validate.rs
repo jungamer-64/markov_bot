@@ -127,7 +127,9 @@ fn model2_pair_range(pair: &Pair2Record, prefix_count: usize) -> Result<(usize, 
         return Err("model2 pair prefix_len must be greater than zero".into());
     }
 
-    let end = start.checked_add(len).ok_or("model2 prefix range overflow")?;
+    let end = start
+        .checked_add(len)
+        .ok_or("model2 prefix range overflow")?;
     if end > prefix_count {
         return Err("model2 pair prefix range is out of bounds".into());
     }

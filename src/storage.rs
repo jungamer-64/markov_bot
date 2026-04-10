@@ -52,12 +52,16 @@ pub async fn load_chain(path: &Path) -> Result<MarkovChain, DynError> {
     read::decode_chain(bytes.as_slice())
 }
 
-pub async fn save_chain(path: &Path, chain: &MarkovChain) -> Result<(), DynError> {
+pub async fn save_chain(
+    path: &Path,
+    chain: &MarkovChain,
+    min_edge_count: Count,
+) -> Result<(), DynError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
 
-    let compiled = write::compile_chain(chain)?;
+    let compiled = write::compile_chain(chain, min_edge_count)?;
     let payload = write::encode_storage(&compiled)?;
 
     read::decode_chain(payload.as_slice())?;

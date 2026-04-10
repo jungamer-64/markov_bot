@@ -1,9 +1,9 @@
 use super::super::{
     DynError, EDGE_RECORD_SIZE, FLAGS, HEADER_SIZE, Header, MAGIC, NORMALIZATION_FLAGS,
     PAIR2_RECORD_SIZE, PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE, PREFIX2_RECORD_SIZE,
-    PREFIX3_RECORD_SIZE,
-    START_RECORD_SIZE, SectionRanges, TOKENIZER_VERSION, VERSION, align_to_eight, bytes_for_len,
-    checked_add, compute_checksum, u64_from_usize, usize_from_u32, usize_from_u64,
+    PREFIX3_RECORD_SIZE, START_RECORD_SIZE, SectionRanges, TOKENIZER_VERSION, VERSION,
+    align_to_eight, bytes_for_len, checked_add, compute_checksum, u64_from_usize, usize_from_u32,
+    usize_from_u64,
 };
 use super::{read_exact, read_u32_value, read_u64_value};
 

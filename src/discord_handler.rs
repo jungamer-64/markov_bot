@@ -85,7 +85,12 @@ impl DiscordHandler {
 
         if outcome.should_persist {
             let snapshot = self.snapshot_chain().await;
-            save_chain(&self.config.data_path, &snapshot).await?;
+            save_chain(
+                &self.config.data_path,
+                &snapshot,
+                self.config.storage_min_edge_count,
+            )
+            .await?;
         }
 
         if let Some(text) = outcome.reply_text {
