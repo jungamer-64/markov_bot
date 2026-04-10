@@ -363,7 +363,11 @@ async fn loads_cumulative_values_beyond_u32_max() {
         .expect("write should succeed");
 
     let loaded = load_chain(&file_path).await.expect("load should succeed");
-    assert_eq!(loaded.starts.get(&[BOS_ID, BOS_ID, BOS_ID]), Some(&huge));
+    let x_id = *loaded
+        .token_to_id
+        .get("x")
+        .expect("token id for 'x' should exist");
+    assert_eq!(loaded.starts.get(&[BOS_ID, BOS_ID, x_id]), Some(&huge));
 
     let edges = loaded
         .model3

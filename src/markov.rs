@@ -1,8 +1,10 @@
 use std::{collections::HashMap, hash::Hash};
 
-use rand::{Rng, RngExt};
+use rand::Rng;
 
 use crate::config::DynError;
+
+mod sampling;
 
 pub type TokenId = u32;
 pub type Count = u64;
@@ -81,7 +83,10 @@ impl MarkovChain {
 
         sentence.push(EOS_ID);
 
-        let start_prefix = [sentence[0], sentence[1], sentence[2]];
+        let first_token = *sentence
+            .get(3)
+            .ok_or("trained sentence is missing first token")?;
+        let start_prefix = [sentence[1], sentence[2], first_token];
         increment_count(&mut self.starts, start_prefix);
 
         for window in sentence.windows(4) {
@@ -119,8 +124,10 @@ impl MarkovChain {
             return None;
         }
 
-        let mut context = choose_weighted_prefix(&self.starts, rng)?;
+        let mut context = sampling::choose_weighted_prefix(&self.starts, rng, options.temperature)?;
         let mut generated = Vec::new();
+
+        self.seed_generated_tokens_from_context(context, options.max_words, &mut generated)?;
 
         self.collect_generated_tokens(rng, options, &mut context, &mut generated)?;
 
@@ -138,7 +145,7 @@ impl MarkovChain {
         context: &mut [TokenId; 3],
         generated: &mut Vec<String>,
     ) -> Option<()> {
-        for _ in 0..options.max_words {
+        while generated.len() < options.max_words {
             let allow_eos = generated.len() >= options.min_words_before_eos;
             let next = self.choose_next_token(*context, rng, options.temperature, allow_eos);
 
@@ -148,6 +155,31 @@ impl MarkovChain {
 
             *context = [context[1], context[2], next];
             self.push_generated_token(generated, next)?;
+        }
+
+        Some(())
+    }
+
+    fn seed_generated_tokens_from_context(
+        &self,
+        context: [TokenId; 3],
+        max_words: usize,
+        generated: &mut Vec<String>,
+    ) -> Option<()> {
+        for token in context {
+            if generated.len() >= max_words {
+                break;
+            }
+
+            if token == BOS_ID {
+                continue;
+            }
+
+            if token == EOS_ID {
+                break;
+            }
+
+            self.push_generated_token(generated, token)?;
         }
 
         Some(())
@@ -207,20 +239,20 @@ impl MarkovChain {
         allow_eos: bool,
     ) -> Option<TokenId> {
         if let Some(edges) = self.model3.get(&context)
-            && let Some(next) = choose_weighted_token(edges, rng, temperature, allow_eos)
+            && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
         {
             return Some(next);
         }
 
         let suffix2 = [context[1], context[2]];
         if let Some(edges) = self.model2.get(&suffix2)
-            && let Some(next) = choose_weighted_token(edges, rng, temperature, allow_eos)
+            && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
         {
             return Some(next);
         }
 
         if let Some(edges) = self.model1.get(&context[2])
-            && let Some(next) = choose_weighted_token(edges, rng, temperature, allow_eos)
+            && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
         {
             return Some(next);
         }
@@ -246,7 +278,7 @@ impl MarkovChain {
             }
         }
 
-        choose_weighted_token(&totals, rng, temperature, false)
+        sampling::choose_weighted_token(&totals, rng, temperature, false)
     }
 }
 
@@ -269,138 +301,13 @@ fn increment_nested_count<K>(
     increment_count(candidates, next);
 }
 
-fn choose_weighted_prefix<R: Rng + ?Sized>(
-    starts: &HashMap<[TokenId; 3], Count>,
-    rng: &mut R,
-) -> Option<[TokenId; 3]> {
-    let mut entries = starts
-        .iter()
-        .filter_map(|(prefix, count)| (*count > 0).then_some((*prefix, *count)))
-        .collect::<Vec<_>>();
-
-    entries.sort_unstable_by_key(|(prefix, _)| *prefix);
-    choose_weighted_key(entries.as_slice(), rng, DEFAULT_GENERATION_TEMPERATURE)
-}
-
-fn choose_weighted_token<R: Rng + ?Sized>(
-    edges: &HashMap<TokenId, Count>,
-    rng: &mut R,
-    temperature: f64,
-    allow_eos: bool,
-) -> Option<TokenId> {
-    let mut entries = edges
-        .iter()
-        .filter_map(|(token, count)| {
-            if *count == 0 || (!allow_eos && *token == EOS_ID) {
-                return None;
-            }
-
-            Some((*token, *count))
-        })
-        .collect::<Vec<_>>();
-
-    entries.sort_unstable_by_key(|(token, _)| *token);
-    choose_weighted_key(entries.as_slice(), rng, temperature)
-}
-
-fn choose_weighted_key<K: Copy, R: Rng + ?Sized>(
-    entries: &[(K, Count)],
-    rng: &mut R,
-    temperature: f64,
-) -> Option<K> {
-    if !temperature.is_finite() || temperature <= 0.0 {
-        return None;
-    }
-
-    if (temperature - DEFAULT_GENERATION_TEMPERATURE).abs() <= f64::EPSILON {
-        return choose_weighted_key_default(entries, rng);
-    }
-
-    choose_weighted_key_with_temperature(entries, rng, temperature)
-}
-
-fn choose_weighted_key_default<K: Copy, R: Rng + ?Sized>(
-    entries: &[(K, Count)],
-    rng: &mut R,
-) -> Option<K> {
-    let total = entries
-        .iter()
-        .map(|(_, count)| *count)
-        .fold(0_u64, u64::saturating_add);
-
-    if total == 0 {
-        return None;
-    }
-
-    let mut threshold = rng.random_range(1..=total);
-
-    for (key, count) in entries {
-        if threshold <= *count {
-            return Some(*key);
-        }
-
-        threshold -= *count;
-    }
-
-    None
-}
-
-fn choose_weighted_key_with_temperature<K: Copy, R: Rng + ?Sized>(
-    entries: &[(K, Count)],
-    rng: &mut R,
-    temperature: f64,
-) -> Option<K> {
-    let (weighted_entries, total_weight) = build_temperature_weights(entries, temperature)?;
-
-    let threshold = rng.random_range(0.0_f64..total_weight);
-    let mut cumulative = 0.0_f64;
-
-    for (key, weight) in weighted_entries {
-        cumulative += weight;
-        if threshold < cumulative {
-            return Some(key);
-        }
-    }
-
-    entries.last().map(|(key, _)| *key)
-}
-
-fn build_temperature_weights<K: Copy>(
-    entries: &[(K, Count)],
-    temperature: f64,
-) -> Option<(Vec<(K, f64)>, f64)> {
-    let exponent = 1.0_f64 / temperature;
-    let mut weighted_entries = Vec::with_capacity(entries.len());
-    let mut total_weight = 0.0_f64;
-
-    for (key, count) in entries {
-        let Some(weight) = scaled_temperature_weight(*count, exponent) else {
-            continue;
-        };
-
-        total_weight += weight;
-        weighted_entries.push((*key, weight));
-    }
-
-    (total_weight > 0.0).then_some((weighted_entries, total_weight))
-}
-
-fn scaled_temperature_weight(count: Count, exponent: f64) -> Option<f64> {
-    if count == 0 {
-        return None;
-    }
-
-    let count_u32 = u32::try_from(count).unwrap_or(u32::MAX);
-    let scaled = f64::from(count_u32).powf(exponent);
-
-    (scaled.is_finite() && scaled > 0.0).then_some(scaled)
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use rand::{SeedableRng, rngs::StdRng};
 
-    use super::{GenerationOptions, MarkovChain};
+    use super::{BOS_ID, EOS_ID, GenerationOptions, MarkovChain};
 
     #[test]
     fn trains_and_generates_sentence_without_spaces() {
@@ -499,6 +406,45 @@ mod tests {
             chain.generate_sentence_with_options(&mut rng, GenerationOptions::new(5, 0.0, 0));
 
         assert!(sentence.is_none());
+    }
+
+    #[test]
+    fn stores_start_prefix_using_first_token() {
+        let mut chain = MarkovChain::default();
+        chain
+            .train_tokens(&tokens(["a", "b"]))
+            .expect("training should succeed");
+
+        let a_id = *chain
+            .token_to_id
+            .get("a")
+            .expect("token id for 'a' should exist");
+
+        assert_eq!(chain.starts.get(&[BOS_ID, BOS_ID, a_id]), Some(&1));
+        assert!(!chain.starts.contains_key(&[BOS_ID, BOS_ID, BOS_ID]));
+    }
+
+    #[test]
+    fn emits_seeded_start_token_before_first_transition() {
+        let mut chain = MarkovChain::default();
+
+        chain.token_to_id.insert("a".to_owned(), 2);
+        chain.id_to_token.push("a".to_owned());
+
+        chain.starts.insert([BOS_ID, BOS_ID, 2], 1);
+        chain
+            .model3
+            .insert([BOS_ID, BOS_ID, 2], HashMap::from([(EOS_ID, 1)]));
+        chain
+            .model2
+            .insert([BOS_ID, 2], HashMap::from([(EOS_ID, 1)]));
+        chain.model1.insert(2, HashMap::from([(EOS_ID, 1)]));
+
+        let mut rng = StdRng::seed_from_u64(123);
+        let sentence =
+            chain.generate_sentence_with_options(&mut rng, GenerationOptions::new(1, 1.0, 0));
+
+        assert_eq!(sentence, Some("a".to_owned()));
     }
 
     fn sample_b_frequency(
