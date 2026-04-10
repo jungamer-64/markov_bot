@@ -750,10 +750,8 @@ v1 では order-3 のみ `(w1, w2)` による第 1 段索引を持つ。
 
 - 64bit cumulative 対応
 - 低頻度語の pruning
-- 温度付きサンプリング
 - alias method 導入の検討
 - 文頭専用モデルの追加
-- `<EOS>` 制御の改善
 - 圧縮形式の追加
 - order-2 への補助索引追加
 - tokenizer 仕様の完全固定

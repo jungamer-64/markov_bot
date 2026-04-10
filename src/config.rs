@@ -7,6 +7,8 @@ pub struct BotConfig {
     pub discord_token: String,
     pub data_path: PathBuf,
     pub max_words: usize,
+    pub generation_temperature: f64,
+    pub min_words_before_eos: usize,
     pub reply_cooldown_secs: u64,
 }
 
@@ -24,12 +26,24 @@ impl BotConfig {
             return Err("REPLY_MAX_WORDS must be >= 1".into());
         }
 
+        let generation_temperature = env_parse_or_default("REPLY_TEMPERATURE", 1.0_f64)?;
+        if !generation_temperature.is_finite() || generation_temperature <= 0.0 {
+            return Err("REPLY_TEMPERATURE must be a finite value > 0".into());
+        }
+
+        let min_words_before_eos = env_parse_or_default("REPLY_MIN_WORDS_BEFORE_EOS", 0_usize)?;
+        if min_words_before_eos > max_words {
+            return Err("REPLY_MIN_WORDS_BEFORE_EOS must be <= REPLY_MAX_WORDS".into());
+        }
+
         let reply_cooldown_secs = env_parse_or_default("REPLY_COOLDOWN_SECS", 5_u64)?;
 
         Ok(Self {
             discord_token,
             data_path,
             max_words,
+            generation_temperature,
+            min_words_before_eos,
             reply_cooldown_secs,
         })
     }
