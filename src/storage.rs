@@ -509,6 +509,23 @@ fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {
     if header.flags != FLAGS {
         return Err(format!("unsupported flags: {}", header.flags).into());
     }
+    if header.tokenizer_version != TOKENIZER_VERSION {
+        return Err(format!(
+            "unsupported tokenizer_version: {}",
+            header.tokenizer_version
+        )
+        .into());
+    }
+    if header.normalization_flags != NORMALIZATION_FLAGS {
+        return Err(format!(
+            "unsupported normalization_flags: {}",
+            header.normalization_flags
+        )
+        .into());
+    }
+    if header.checksum != CHECKSUM {
+        return Err(format!("unsupported checksum value: {}", header.checksum).into());
+    }
 
     let file_size = u64_from_usize(bytes.len(), "file size")?;
     if header.file_size != file_size {
@@ -627,7 +644,7 @@ fn build_section_ranges(header: &Header) -> Result<SectionRanges, DynError> {
         "vocab blob area",
     )?;
 
-    Ok(SectionRanges {
+    let ranges = SectionRanges {
         vocab_offsets,
         vocab_blob_area,
         starts,
@@ -638,7 +655,88 @@ fn build_section_ranges(header: &Header) -> Result<SectionRanges, DynError> {
         model2_edges,
         model1_prefixes,
         model1_edges,
-    })
+    };
+
+    validate_section_layout(header, &ranges)?;
+
+    Ok(ranges)
+}
+
+fn validate_section_layout(header: &Header, ranges: &SectionRanges) -> Result<(), DynError> {
+    ensure_non_overlapping(
+        "vocab offsets",
+        &ranges.vocab_offsets,
+        "vocab blob",
+        ranges.vocab_blob_area.start,
+    )?;
+    ensure_non_overlapping(
+        "vocab blob",
+        &ranges.vocab_blob_area,
+        "start records",
+        ranges.starts.start,
+    )?;
+    ensure_non_overlapping(
+        "start records",
+        &ranges.starts,
+        "model3 pairs",
+        ranges.model3_pairs.start,
+    )?;
+    ensure_non_overlapping(
+        "model3 pairs",
+        &ranges.model3_pairs,
+        "model3 prefixes",
+        ranges.model3_prefixes.start,
+    )?;
+    ensure_non_overlapping(
+        "model3 prefixes",
+        &ranges.model3_prefixes,
+        "model3 edges",
+        ranges.model3_edges.start,
+    )?;
+    ensure_non_overlapping(
+        "model3 edges",
+        &ranges.model3_edges,
+        "model2 prefixes",
+        ranges.model2_prefixes.start,
+    )?;
+    ensure_non_overlapping(
+        "model2 prefixes",
+        &ranges.model2_prefixes,
+        "model2 edges",
+        ranges.model2_edges.start,
+    )?;
+    ensure_non_overlapping(
+        "model2 edges",
+        &ranges.model2_edges,
+        "model1 prefixes",
+        ranges.model1_prefixes.start,
+    )?;
+    ensure_non_overlapping(
+        "model1 prefixes",
+        &ranges.model1_prefixes,
+        "model1 edges",
+        ranges.model1_edges.start,
+    )?;
+
+    let file_size = usize_from_u64(header.file_size, "file_size")?;
+    if ranges.model1_edges.end != file_size {
+        return Err("model1 edges section must end at file_size".into());
+    }
+
+    Ok(())
+}
+
+fn ensure_non_overlapping(
+    left_name: &str,
+    left_range: &std::ops::Range<usize>,
+    right_name: &str,
+    right_start: usize,
+) -> Result<(), DynError> {
+    if left_range.end > right_start {
+        return Err(format!("{left_name} section overlaps {right_name} section").into());
+    }
+
+    Ok(())
 }
 
 fn parse_storage(
@@ -1465,12 +1563,17 @@ fn validate_model1(
 
 fn validate_starts(starts: &[StartRecord], model3_prefix_count: usize) -> Result<(), DynError> {
     let mut previous_cumulative = 0_u32;
+    let mut seen = vec![false; model3_prefix_count];
 
     for record in starts {
         let prefix_id = usize_from_u32(record.prefix_id, "start prefix_id")?;
         if prefix_id >= model3_prefix_count {
             return Err("start prefix_id is out of range".into());
         }
+        if seen[prefix_id] {
+            return Err("duplicate start prefix_id is not allowed".into());
+        }
+        seen[prefix_id] = true;
 
         if record.cumulative <= previous_cumulative {
             return Err("start cumulative must be strictly increasing".into());
@@ -1553,7 +1656,9 @@ fn decode_starts(
             .ok_or("start prefix_id is out of bounds")?;
 
         let entry = decoded.entry(prefix).or_insert(0_u64);
-        *entry = (*entry).saturating_add(u64::from(delta));
+        *entry = (*entry)
+            .checked_add(u64::from(delta))
+            .ok_or("start count overflow while decoding")?;
     }
 
     Ok(decoded)
@@ -1742,7 +1847,18 @@ mod tests {
 
     use crate::markov::MarkovChain;
 
-    use super::{load_chain, save_chain};
+    use super::{FLAGS, NORMALIZATION_FLAGS, TOKENIZER_VERSION, VERSION, load_chain, save_chain};
+
+    const VERSION_OFFSET: usize = 8;
+    const FLAGS_OFFSET: usize = 12;
+    const TOKENIZER_VERSION_OFFSET: usize = 16;
+    const NORMALIZATION_FLAGS_OFFSET: usize = 20;
+    const TOKEN_COUNT_OFFSET: usize = 24;
+    const START_OFFSET_OFFSET: usize = 76;
+    const MODEL3_EDGE_OFFSET_OFFSET: usize = 100;
+    const VOCAB_BLOB_OFFSET_OFFSET: usize = 68;
+    const FILE_SIZE_OFFSET: usize = 140;
+    const CHECKSUM_OFFSET: usize = 148;
 
     #[tokio::test]
     async fn load_returns_default_for_missing_file() {
@@ -1783,6 +1899,235 @@ mod tests {
         assert_eq!(left, right);
 
         let _ = fs::remove_file(file_path).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_magic() {
+        let file_path = write_sample_file("invalid_magic", &sample_chain()).await;
+        let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+        bytes[0] = b'X';
+        fs::write(&file_path, bytes)
+            .await
+            .expect("write should succeed");
+
+        assert!(load_chain(&file_path).await.is_err());
+
+        let _ = fs::remove_file(file_path).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_version_mismatch() {
+        let file_path = write_sample_file("version_mismatch", &sample_chain()).await;
+        let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+        write_u32_at(&mut bytes, VERSION_OFFSET, VERSION.saturating_add(1));
+        fs::write(&file_path, bytes)
+            .await
+            .expect("write should succeed");
+
+        assert!(load_chain(&file_path).await.is_err());
+
+        let _ = fs::remove_file(file_path).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_flags_mismatch() {
+        let file_path = write_sample_file("flags_mismatch", &sample_chain()).await;
+        let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+        write_u32_at(&mut bytes, FLAGS_OFFSET, FLAGS.saturating_add(1));
+        fs::write(&file_path, bytes)
+            .await
+            .expect("write should succeed");
+
+        assert!(load_chain(&file_path).await.is_err());
+
+        let _ = fs::remove_file(file_path).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_tokenizer_or_normalization_mismatch() {
+        let file_path = write_sample_file("preprocess_mismatch", &sample_chain()).await;
+        let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+        write_u32_at(
+            &mut bytes,
+            TOKENIZER_VERSION_OFFSET,
+            TOKENIZER_VERSION.saturating_add(1),
+        );
+        fs::write(&file_path, &bytes)
+            .await
+            .expect("write should succeed");
+        assert!(load_chain(&file_path).await.is_err());
+
+        write_u32_at(&mut bytes, TOKENIZER_VERSION_OFFSET, TOKENIZER_VERSION);
+        write_u32_at(
+            &mut bytes,
+            NORMALIZATION_FLAGS_OFFSET,
+            NORMALIZATION_FLAGS.saturating_add(1),
+        );
+        fs::write(&file_path, bytes)
+            .await
+            .expect("write should succeed");
+        assert!(load_chain(&file_path).await.is_err());
+
+        let _ = fs::remove_file(file_path).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_file_size_mismatch() {
+        let file_path = write_sample_file("filesize_mismatch", &sample_chain()).await;
+        let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+        let file_size = read_u64_at(&bytes, FILE_SIZE_OFFSET);
+        write_u64_at(&mut bytes, FILE_SIZE_OFFSET, file_size.saturating_add(1));
+        fs::write(&file_path, bytes)
+            .await
+            .expect("write should succeed");
+
+        assert!(load_chain(&file_path).await.is_err());
+
+        let _ = fs::remove_file(file_path).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_non_zero_checksum() {
+        let file_path = write_sample_file("checksum_non_zero", &sample_chain()).await;
+        let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+        write_u64_at(&mut bytes, CHECKSUM_OFFSET, 1);
+        fs::write(&file_path, bytes)
+            .await
+            .expect("write should succeed");
+
+        assert!(load_chain(&file_path).await.is_err());
+
+        let _ = fs::remove_file(file_path).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_overlapping_sections() {
+        let file_path = write_sample_file("section_overlap", &sample_chain()).await;
+        let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+        let token_count = read_u32_at(&bytes, TOKEN_COUNT_OFFSET);
+        write_u32_at(
+            &mut bytes,
+            TOKEN_COUNT_OFFSET,
+            token_count.saturating_add(1),
+        );
+        fs::write(&file_path, bytes)
+            .await
+            .expect("write should succeed");
+
+        assert!(load_chain(&file_path).await.is_err());
+
+        let _ = fs::remove_file(file_path).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_non_monotonic_edge_cumulative() {
+        let mut chain = MarkovChain::default();
+        chain
+            .train_tokens(&["a".to_owned()])
+            .expect("training should succeed");
+        chain
+            .train_tokens(&["b".to_owned()])
+            .expect("training should succeed");
+
+        let file_path = write_sample_file("edge_non_monotonic", &chain).await;
+        let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+
+        let model3_edge_offset =
+            usize::try_from(read_u64_at(&bytes, MODEL3_EDGE_OFFSET_OFFSET)).expect("offset fits");
+        let first_cumulative = read_u32_at(&bytes, model3_edge_offset + 4);
+        write_u32_at(&mut bytes, model3_edge_offset + 12, first_cumulative);
+
+        fs::write(&file_path, bytes)
+            .await
+            .expect("write should succeed");
+
+        assert!(load_chain(&file_path).await.is_err());
+
+        let _ = fs::remove_file(file_path).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_start_prefix_id_out_of_bounds() {
+        let file_path = write_sample_file("start_prefix_out_of_bounds", &sample_chain()).await;
+        let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+
+        let start_offset =
+            usize::try_from(read_u64_at(&bytes, START_OFFSET_OFFSET)).expect("offset fits");
+        write_u32_at(&mut bytes, start_offset, u32::MAX);
+
+        fs::write(&file_path, bytes)
+            .await
+            .expect("write should succeed");
+
+        assert!(load_chain(&file_path).await.is_err());
+
+        let _ = fs::remove_file(file_path).await;
+    }
+
+    #[tokio::test]
+    async fn rejects_broken_bos_token() {
+        let file_path = write_sample_file("broken_bos", &sample_chain()).await;
+        let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+
+        let vocab_blob_offset =
+            usize::try_from(read_u64_at(&bytes, VOCAB_BLOB_OFFSET_OFFSET)).expect("offset fits");
+        bytes[vocab_blob_offset] = b'X';
+
+        fs::write(&file_path, bytes)
+            .await
+            .expect("write should succeed");
+
+        assert!(load_chain(&file_path).await.is_err());
+
+        let _ = fs::remove_file(file_path).await;
+    }
+
+    fn sample_chain() -> MarkovChain {
+        let mut chain = MarkovChain::default();
+        chain
+            .train_tokens(&[
+                "a".to_owned(),
+                "b".to_owned(),
+                "c".to_owned(),
+                "d".to_owned(),
+            ])
+            .expect("training should succeed");
+        chain
+            .train_tokens(&["a".to_owned()])
+            .expect("training should succeed");
+        chain
+    }
+
+    async fn write_sample_file(prefix: &str, chain: &MarkovChain) -> std::path::PathBuf {
+        let file_path = temp_file_path(prefix);
+        save_chain(&file_path, chain)
+            .await
+            .expect("save should succeed");
+        file_path
+    }
+
+    fn write_u32_at(bytes: &mut [u8], offset: usize, value: u32) {
+        let end = offset + 4;
+        bytes[offset..end].copy_from_slice(value.to_le_bytes().as_slice());
+    }
+
+    fn read_u32_at(bytes: &[u8], offset: usize) -> u32 {
+        let end = offset + 4;
+        let mut raw = [0_u8; 4];
+        raw.copy_from_slice(&bytes[offset..end]);
+        u32::from_le_bytes(raw)
+    }
+
+    fn write_u64_at(bytes: &mut [u8], offset: usize, value: u64) {
+        let end = offset + 8;
+        bytes[offset..end].copy_from_slice(value.to_le_bytes().as_slice());
+    }
+
+    fn read_u64_at(bytes: &[u8], offset: usize) -> u64 {
+        let end = offset + 8;
+        let mut raw = [0_u8; 8];
+        raw.copy_from_slice(&bytes[offset..end]);
+        u64::from_le_bytes(raw)
     }
 
     fn temp_file_path(prefix: &str) -> std::path::PathBuf {
