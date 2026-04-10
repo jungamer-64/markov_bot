@@ -1,0 +1,10 @@
+
+
+#Ignore vscode AI rules
+.github/instructions/
+.env
+data
+.codacy
+# Added by cargo
+
+/target
