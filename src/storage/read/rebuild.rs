@@ -41,6 +41,7 @@ fn validate_storage(
         token_count,
     )?;
     validate::validate_model2(
+        parsed.model2_pairs.as_slice(),
         parsed.model2_prefixes.as_slice(),
         parsed.model2_edges.as_slice(),
         token_count,

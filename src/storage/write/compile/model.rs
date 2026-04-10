@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
 use super::super::super::{
-    Count, DynError, EdgeRecord, MarkovChain, Model3Build, Pair3Record, Prefix1Record,
-    Prefix2Record, Prefix3Record, StartRecord, TokenId, u32_from_usize, validate_token_id,
+    Count, DynError, EdgeRecord, MarkovChain, Model3Build, Pair2Record, Pair3Record,
+    Prefix1Record, Prefix2Record, Prefix3Record, StartRecord, TokenId, u32_from_usize,
+    validate_token_id,
 };
 
 type Model3Entry<'a> = ([TokenId; 3], &'a HashMap<TokenId, Count>);
+type Model2Build = (Vec<Pair2Record>, Vec<Prefix2Record>, Vec<EdgeRecord>);
 
 pub(super) fn build_model3(chain: &MarkovChain, token_count: u32) -> Result<Model3Build, DynError> {
     let mut entries = chain
@@ -45,7 +47,7 @@ pub(super) fn build_model3(chain: &MarkovChain, token_count: u32) -> Result<Mode
 pub(super) fn build_model2(
     chain: &MarkovChain,
     token_count: u32,
-) -> Result<(Vec<Prefix2Record>, Vec<EdgeRecord>), DynError> {
+) -> Result<Model2Build, DynError> {
     let mut entries = chain
         .model2
         .iter()
@@ -53,26 +55,40 @@ pub(super) fn build_model2(
         .collect::<Vec<_>>();
     entries.sort_unstable_by_key(|(prefix, _)| *prefix);
 
+    let mut pair_records = Vec::new();
     let mut prefix_records = Vec::new();
     let mut edge_records = Vec::new();
 
-    for (prefix, edges) in entries {
-        validate_token_id(prefix[0], token_count, "model2 prefix.w1")?;
-        validate_token_id(prefix[1], token_count, "model2 prefix.w2")?;
+    for group in entries.chunk_by(|left, right| left.0[0] == right.0[0]) {
+        let w1 = group[0].0[0];
+        validate_token_id(w1, token_count, "model2 pair.w1")?;
 
-        let (edge_start, edge_len, total) =
-            append_edges(edges, &mut edge_records, token_count, "model2 edges")?;
+        let prefix_start = u32_from_usize(prefix_records.len(), "model2 prefix start")?;
 
-        prefix_records.push(Prefix2Record {
-            w1: prefix[0],
-            w2: prefix[1],
-            edge_start,
-            edge_len,
-            total,
+        for (prefix, edges) in group.iter().copied() {
+            validate_token_id(prefix[1], token_count, "model2 prefix.w2")?;
+
+            let (edge_start, edge_len, total) =
+                append_edges(edges, &mut edge_records, token_count, "model2 edges")?;
+
+            prefix_records.push(Prefix2Record {
+                w1,
+                w2: prefix[1],
+                edge_start,
+                edge_len,
+                total,
+            });
+        }
+
+        let prefix_len = u32_from_usize(group.len(), "model2 prefix length")?;
+        pair_records.push(Pair2Record {
+            w1,
+            prefix_start,
+            prefix_len,
         });
     }
 
-    Ok((prefix_records, edge_records))
+    Ok((pair_records, prefix_records, edge_records))
 }
 
 pub(super) fn build_model1(

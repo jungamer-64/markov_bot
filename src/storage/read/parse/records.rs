@@ -1,7 +1,8 @@
 use super::super::super::{
-    DynError, EDGE_RECORD_SIZE, EdgeRecord, PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE,
-    PREFIX2_RECORD_SIZE, PREFIX3_RECORD_SIZE, Pair3Record, Prefix1Record, Prefix2Record,
-    Prefix3Record, START_RECORD_SIZE, StartRecord, bytes_for_len, usize_from_u64,
+    DynError, EDGE_RECORD_SIZE, EdgeRecord, PAIR2_RECORD_SIZE, PAIR3_RECORD_SIZE,
+    PREFIX1_RECORD_SIZE, PREFIX2_RECORD_SIZE, PREFIX3_RECORD_SIZE, Pair2Record, Pair3Record,
+    Prefix1Record, Prefix2Record, Prefix3Record, START_RECORD_SIZE, StartRecord, bytes_for_len,
+    usize_from_u64,
 };
 use super::super::{read_u32_value, read_u64_value};
 
@@ -67,6 +68,29 @@ pub(super) fn parse_pair3_records(
         records.push(Pair3Record {
             w1: read_u32_value(bytes, &mut cursor)?,
             w2: read_u32_value(bytes, &mut cursor)?,
+            prefix_start: read_u32_value(bytes, &mut cursor)?,
+            prefix_len: read_u32_value(bytes, &mut cursor)?,
+        });
+    }
+
+    Ok(records)
+}
+
+pub(super) fn parse_pair2_records(
+    bytes: &[u8],
+    count: usize,
+) -> Result<Vec<Pair2Record>, DynError> {
+    let expected = bytes_for_len(count, PAIR2_RECORD_SIZE, "model2 pair records")?;
+    let expected = usize_from_u64(expected, "model2 pair records")?;
+    if bytes.len() != expected {
+        return Err("model2 pair records size mismatch".into());
+    }
+
+    let mut records = Vec::with_capacity(count);
+    let mut cursor = 0_usize;
+    for _ in 0..count {
+        records.push(Pair2Record {
+            w1: read_u32_value(bytes, &mut cursor)?,
             prefix_start: read_u32_value(bytes, &mut cursor)?,
             prefix_len: read_u32_value(bytes, &mut cursor)?,
         });

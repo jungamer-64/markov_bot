@@ -15,18 +15,19 @@ mod write;
 mod tests;
 
 use types::{
-    CompiledStorage, EdgeRecord, Header, Model3Build, Pair3Record, ParsedStorage, Prefix1Record,
-    Prefix2Record, Prefix3Record, SectionCounts, SectionRanges, SectionSizes, StartRecord,
+    CompiledStorage, EdgeRecord, Header, Model3Build, Pair2Record, Pair3Record, ParsedStorage,
+    Prefix1Record, Prefix2Record, Prefix3Record, SectionCounts, SectionRanges, SectionSizes,
+    StartRecord,
 };
 
 const MAGIC: [u8; 8] = *b"MKV3BIN\0";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const FLAGS: u32 = 0;
 const TOKENIZER_VERSION: u32 = 1;
 const NORMALIZATION_FLAGS: u32 = 0;
 const CHECKSUM_PLACEHOLDER: u64 = 0;
 
-const HEADER_SIZE: usize = 156;
+const HEADER_SIZE: usize = 168;
 const CHECKSUM_SIZE: usize = std::mem::size_of::<u64>();
 const CHECKSUM_OFFSET: usize = HEADER_SIZE - CHECKSUM_SIZE;
 
@@ -35,6 +36,7 @@ const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 const START_RECORD_SIZE: u64 = 12;
 const PAIR3_RECORD_SIZE: u64 = 16;
+const PAIR2_RECORD_SIZE: u64 = 12;
 const PREFIX3_RECORD_SIZE: u64 = 20;
 const EDGE_RECORD_SIZE: u64 = 12;
 const PREFIX2_RECORD_SIZE: u64 = 24;

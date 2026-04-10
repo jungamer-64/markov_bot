@@ -1,6 +1,6 @@
 use super::super::super::{
-    DynError, EdgeRecord, Pair3Record, Prefix1Record, Prefix2Record, Prefix3Record, StartRecord,
-    TokenId, usize_from_u32, validate_token_id,
+    DynError, EdgeRecord, Pair2Record, Pair3Record, Prefix1Record, Prefix2Record, Prefix3Record,
+    StartRecord, TokenId, usize_from_u32, validate_token_id,
 };
 
 pub(super) fn validate_and_build_model3_keys(
@@ -73,23 +73,97 @@ pub(super) fn validate_and_build_model3_keys(
 }
 
 pub(super) fn validate_model2(
+    pairs: &[Pair2Record],
     prefixes: &[Prefix2Record],
     edges: &[EdgeRecord],
     token_count: u32,
 ) -> Result<(), DynError> {
-    let mut previous_key = None;
+    let mut assigned = vec![false; prefixes.len()];
+    let mut previous_w1 = None;
 
-    for prefix in prefixes {
-        validate_token_id(prefix.w1, token_count, "model2 prefix.w1")?;
-        validate_token_id(prefix.w2, token_count, "model2 prefix.w2")?;
+    for pair in pairs {
+        validate_model2_pair_order(pair, token_count, &mut previous_w1)?;
 
-        let key = (prefix.w1, prefix.w2);
-        if let Some(previous) = previous_key
-            && key <= previous
-        {
-            return Err("model2 prefix records are not strictly sorted".into());
+        let (start, end) = model2_pair_range(pair, prefixes.len())?;
+        validate_model2_pair_group(
+            pair,
+            prefixes,
+            edges,
+            token_count,
+            start,
+            end,
+            &mut assigned,
+        )?;
+    }
+
+    if assigned.iter().any(|is_assigned| !*is_assigned) {
+        return Err("some model2 prefixes are not covered by pair records".into());
+    }
+
+    Ok(())
+}
+
+fn validate_model2_pair_order(
+    pair: &Pair2Record,
+    token_count: u32,
+    previous_w1: &mut Option<u32>,
+) -> Result<(), DynError> {
+    validate_token_id(pair.w1, token_count, "model2 pair.w1")?;
+
+    if let Some(previous) = *previous_w1
+        && pair.w1 <= previous
+    {
+        return Err("model2 pair records are not strictly sorted".into());
+    }
+    *previous_w1 = Some(pair.w1);
+
+    Ok(())
+}
+
+fn model2_pair_range(pair: &Pair2Record, prefix_count: usize) -> Result<(usize, usize), DynError> {
+    let start = usize_from_u32(pair.prefix_start, "model2 prefix start")?;
+    let len = usize_from_u32(pair.prefix_len, "model2 prefix len")?;
+    if len == 0 {
+        return Err("model2 pair prefix_len must be greater than zero".into());
+    }
+
+    let end = start.checked_add(len).ok_or("model2 prefix range overflow")?;
+    if end > prefix_count {
+        return Err("model2 pair prefix range is out of bounds".into());
+    }
+
+    Ok((start, end))
+}
+
+fn validate_model2_pair_group(
+    pair: &Pair2Record,
+    prefixes: &[Prefix2Record],
+    edges: &[EdgeRecord],
+    token_count: u32,
+    start: usize,
+    end: usize,
+    assigned: &mut [bool],
+) -> Result<(), DynError> {
+    let mut previous_w2 = None;
+
+    for index in start..end {
+        if assigned[index] {
+            return Err("model2 pair prefix ranges overlap".into());
         }
-        previous_key = Some(key);
+        assigned[index] = true;
+
+        let prefix = prefixes[index];
+        if prefix.w1 != pair.w1 {
+            return Err("model2 prefix.w1 does not match model2 pair.w1".into());
+        }
+
+        validate_token_id(prefix.w2, token_count, "model2 prefix.w2")?;
+        if let Some(previous) = previous_w2
+            && prefix.w2 <= previous
+        {
+            return Err("model2 prefix records are not sorted by w2 within pair group".into());
+        }
+        previous_w2 = Some(prefix.w2);
 
         validate_prefix_edges(
             edges,

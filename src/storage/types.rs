@@ -14,6 +14,7 @@ pub(super) struct Header {
     pub(super) model3_pair_count: u32,
     pub(super) model3_prefix_count: u32,
     pub(super) model3_edge_count: u32,
+    pub(super) model2_pair_count: u32,
     pub(super) model2_prefix_count: u32,
     pub(super) model2_edge_count: u32,
     pub(super) model1_prefix_count: u32,
@@ -24,6 +25,7 @@ pub(super) struct Header {
     pub(super) model3_pair_offset: u64,
     pub(super) model3_prefix_offset: u64,
     pub(super) model3_edge_offset: u64,
+    pub(super) model2_pair_offset: u64,
     pub(super) model2_prefix_offset: u64,
     pub(super) model2_edge_offset: u64,
     pub(super) model1_prefix_offset: u64,
@@ -42,6 +44,13 @@ pub(super) struct StartRecord {
 pub(super) struct Pair3Record {
     pub(super) w1: u32,
     pub(super) w2: u32,
+    pub(super) prefix_start: u32,
+    pub(super) prefix_len: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Pair2Record {
+    pub(super) w1: u32,
     pub(super) prefix_start: u32,
     pub(super) prefix_len: u32,
 }
@@ -85,6 +94,7 @@ pub(super) struct CompiledStorage {
     pub(super) model3_pairs: Vec<Pair3Record>,
     pub(super) model3_prefixes: Vec<Prefix3Record>,
     pub(super) model3_edges: Vec<EdgeRecord>,
+    pub(super) model2_pairs: Vec<Pair2Record>,
     pub(super) model2_prefixes: Vec<Prefix2Record>,
     pub(super) model2_edges: Vec<EdgeRecord>,
     pub(super) model1_prefixes: Vec<Prefix1Record>,
@@ -98,6 +108,7 @@ pub(super) struct SectionCounts {
     pub(super) model3_pair: u32,
     pub(super) model3_prefix: u32,
     pub(super) model3_edge: u32,
+    pub(super) model2_pair: u32,
     pub(super) model2_prefix: u32,
     pub(super) model2_edge: u32,
     pub(super) model1_prefix: u32,
@@ -112,6 +123,7 @@ pub(super) struct SectionSizes {
     pub(super) model3_pairs: u64,
     pub(super) model3_prefixes: u64,
     pub(super) model3_edges: u64,
+    pub(super) model2_pairs: u64,
     pub(super) model2_prefixes: u64,
     pub(super) model2_edges: u64,
     pub(super) model1_prefixes: u64,
@@ -126,6 +138,7 @@ pub(super) struct SectionRanges {
     pub(super) model3_pairs: std::ops::Range<usize>,
     pub(super) model3_prefixes: std::ops::Range<usize>,
     pub(super) model3_edges: std::ops::Range<usize>,
+    pub(super) model2_pairs: std::ops::Range<usize>,
     pub(super) model2_prefixes: std::ops::Range<usize>,
     pub(super) model2_edges: std::ops::Range<usize>,
     pub(super) model1_prefixes: std::ops::Range<usize>,
@@ -139,6 +152,7 @@ pub(super) struct ParsedStorage {
     pub(super) model3_pairs: Vec<Pair3Record>,
     pub(super) model3_prefixes: Vec<Prefix3Record>,
     pub(super) model3_edges: Vec<EdgeRecord>,
+    pub(super) model2_pairs: Vec<Pair2Record>,
     pub(super) model2_prefixes: Vec<Prefix2Record>,
     pub(super) model2_edges: Vec<EdgeRecord>,
     pub(super) model1_prefixes: Vec<Prefix1Record>,

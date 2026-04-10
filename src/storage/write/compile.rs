@@ -11,6 +11,7 @@ type ModelSections = (
     Vec<super::super::Prefix3Record>,
     Vec<super::super::EdgeRecord>,
     Vec<super::super::StartRecord>,
+    Vec<super::super::Pair2Record>,
     Vec<super::super::Prefix2Record>,
     Vec<super::super::EdgeRecord>,
     Vec<super::super::Prefix1Record>,
@@ -28,6 +29,7 @@ pub(super) fn compile_chain(chain: &MarkovChain) -> Result<CompiledStorage, DynE
         model3_prefixes,
         model3_edges,
         starts,
+        model2_pairs,
         model2_prefixes,
         model2_edges,
         model1_prefixes,
@@ -41,6 +43,7 @@ pub(super) fn compile_chain(chain: &MarkovChain) -> Result<CompiledStorage, DynE
         model3_pairs,
         model3_prefixes,
         model3_edges,
+        model2_pairs,
         model2_prefixes,
         model2_edges,
         model1_prefixes,
@@ -52,7 +55,7 @@ fn build_models(chain: &MarkovChain, token_count: u32) -> Result<ModelSections, 
     let (model3_pairs, model3_prefixes, model3_edges, prefix_to_id) =
         model::build_model3(chain, token_count)?;
     let starts = model::build_starts(chain, &prefix_to_id)?;
-    let (model2_prefixes, model2_edges) = model::build_model2(chain, token_count)?;
+    let (model2_pairs, model2_prefixes, model2_edges) = model::build_model2(chain, token_count)?;
     let (model1_prefixes, model1_edges) = model::build_model1(chain, token_count)?;
 
     Ok((
@@ -60,6 +63,7 @@ fn build_models(chain: &MarkovChain, token_count: u32) -> Result<ModelSections, 
         model3_prefixes,
         model3_edges,
         starts,
+        model2_pairs,
         model2_prefixes,
         model2_edges,
         model1_prefixes,

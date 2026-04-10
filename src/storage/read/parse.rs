@@ -62,6 +62,10 @@ pub(super) fn parse_storage(
             bytes[ranges.model3_edges.clone()].as_ref(),
             usize_from_u32(header.model3_edge_count, "model3 edge count")?,
         )?,
+        model2_pairs: records::parse_pair2_records(
+            bytes[ranges.model2_pairs.clone()].as_ref(),
+            usize_from_u32(header.model2_pair_count, "model2 pair count")?,
+        )?,
         model2_prefixes: records::parse_prefix2_records(
             bytes[ranges.model2_prefixes.clone()].as_ref(),
             usize_from_u32(header.model2_prefix_count, "model2 prefix count")?,

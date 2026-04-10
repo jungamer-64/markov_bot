@@ -12,6 +12,7 @@ pub(super) fn write_sections(
     write_model3_pairs(&mut bytes, compiled, header)?;
     write_model3_prefixes(&mut bytes, compiled, header)?;
     write_model3_edges(&mut bytes, compiled, header)?;
+    write_model2_pairs(&mut bytes, compiled, header)?;
     write_model2_prefixes(&mut bytes, compiled, header)?;
     write_model2_edges(&mut bytes, compiled, header)?;
     write_model1_prefixes(&mut bytes, compiled, header)?;
@@ -119,6 +120,20 @@ fn write_model2_prefixes(
             write_u32(target, record.edge_start);
             write_u32(target, record.edge_len);
             write_u64(target, record.total);
+        }
+    })
+}
+
+fn write_model2_pairs(
+    bytes: &mut Vec<u8>,
+    compiled: &CompiledStorage,
+    header: Header,
+) -> Result<(), DynError> {
+    write_at_offset(bytes, header.model2_pair_offset, |target| {
+        for record in &compiled.model2_pairs {
+            write_u32(target, record.w1);
+            write_u32(target, record.prefix_start);
+            write_u32(target, record.prefix_len);
         }
     })
 }

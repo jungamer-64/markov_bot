@@ -1,10 +1,23 @@
 use super::super::{
     DynError, EDGE_RECORD_SIZE, FLAGS, HEADER_SIZE, Header, MAGIC, NORMALIZATION_FLAGS,
-    PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE, PREFIX2_RECORD_SIZE, PREFIX3_RECORD_SIZE,
+    PAIR2_RECORD_SIZE, PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE, PREFIX2_RECORD_SIZE,
+    PREFIX3_RECORD_SIZE,
     START_RECORD_SIZE, SectionRanges, TOKENIZER_VERSION, VERSION, align_to_eight, bytes_for_len,
     checked_add, compute_checksum, u64_from_usize, usize_from_u32, usize_from_u64,
 };
 use super::{read_exact, read_u32_value, read_u64_value};
+
+struct ModelRanges {
+    starts: std::ops::Range<usize>,
+    model3_pairs: std::ops::Range<usize>,
+    model3_prefixes: std::ops::Range<usize>,
+    model3_edges: std::ops::Range<usize>,
+    model2_pairs: std::ops::Range<usize>,
+    model2_prefixes: std::ops::Range<usize>,
+    model2_edges: std::ops::Range<usize>,
+    model1_prefixes: std::ops::Range<usize>,
+    model1_edges: std::ops::Range<usize>,
+}
 
 pub(super) fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {
     let header = decode_header(bytes)?;
@@ -48,6 +61,7 @@ pub(super) fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {
         header.model3_pair_offset,
         header.model3_prefix_offset,
         header.model3_edge_offset,
+        header.model2_pair_offset,
         header.model2_prefix_offset,
         header.model2_edge_offset,
         header.model1_prefix_offset,
@@ -97,6 +111,39 @@ pub(super) fn build_section_ranges(
         "vocab offsets",
     )?;
 
+    let model_ranges = build_model_ranges(header)?;
+
+    let vocab_blob_area_size = header
+        .start_offset
+        .checked_sub(header.vocab_blob_offset)
+        .ok_or("vocab blob offset exceeds start offset")?;
+    let vocab_blob_area = section_range(
+        header.vocab_blob_offset,
+        vocab_blob_area_size,
+        header.file_size,
+        "vocab blob area",
+    )?;
+
+    let ranges = SectionRanges {
+        vocab_offsets,
+        vocab_blob_area,
+        starts: model_ranges.starts,
+        model3_pairs: model_ranges.model3_pairs,
+        model3_prefixes: model_ranges.model3_prefixes,
+        model3_edges: model_ranges.model3_edges,
+        model2_pairs: model_ranges.model2_pairs,
+        model2_prefixes: model_ranges.model2_prefixes,
+        model2_edges: model_ranges.model2_edges,
+        model1_prefixes: model_ranges.model1_prefixes,
+        model1_edges: model_ranges.model1_edges,
+    };
+
+    validate_section_layout(bytes, header, &ranges)?;
+
+    Ok(ranges)
+}
+
+fn build_model_ranges(header: &Header) -> Result<ModelRanges, DynError> {
     let starts = record_range(
         header.start_offset,
         header.start_count,
@@ -124,6 +171,13 @@ pub(super) fn build_section_ranges(
         EDGE_RECORD_SIZE,
         header.file_size,
         "model3 edges",
+    )?;
+    let model2_pairs = record_range(
+        header.model2_pair_offset,
+        header.model2_pair_count,
+        PAIR2_RECORD_SIZE,
+        header.file_size,
+        "model2 pairs",
     )?;
     let model2_prefixes = record_range(
         header.model2_prefix_offset,
@@ -154,33 +208,17 @@ pub(super) fn build_section_ranges(
         "model1 edges",
     )?;
 
-    let vocab_blob_area_size = header
-        .start_offset
-        .checked_sub(header.vocab_blob_offset)
-        .ok_or("vocab blob offset exceeds start offset")?;
-    let vocab_blob_area = section_range(
-        header.vocab_blob_offset,
-        vocab_blob_area_size,
-        header.file_size,
-        "vocab blob area",
-    )?;
-
-    let ranges = SectionRanges {
-        vocab_offsets,
-        vocab_blob_area,
+    Ok(ModelRanges {
         starts,
         model3_pairs,
         model3_prefixes,
         model3_edges,
+        model2_pairs,
         model2_prefixes,
         model2_edges,
         model1_prefixes,
         model1_edges,
-    };
-
-    validate_section_layout(bytes, header, &ranges)?;
-
-    Ok(ranges)
+    })
 }
 
 fn validate_section_layout(
@@ -249,6 +287,12 @@ fn validate_non_overlapping_sections(ranges: &SectionRanges) -> Result<(), DynEr
         (
             "model3 edges",
             &ranges.model3_edges,
+            "model2 pairs",
+            ranges.model2_pairs.start,
+        ),
+        (
+            "model2 pairs",
+            &ranges.model2_pairs,
             "model2 prefixes",
             ranges.model2_prefixes.start,
         ),
@@ -313,8 +357,13 @@ fn validate_padding_regions(
         ),
         (
             ranges.model3_edges.end,
-            ranges.model2_prefixes.start,
+            ranges.model2_pairs.start,
             "model3 edges",
+        ),
+        (
+            ranges.model2_pairs.end,
+            ranges.model2_prefixes.start,
+            "model2 pairs",
         ),
         (
             ranges.model2_prefixes.end,
@@ -442,6 +491,7 @@ fn decode_header(bytes: &[u8]) -> Result<Header, DynError> {
     let model3_pair_count = read_u32_value(bytes, &mut cursor)?;
     let model3_prefix_count = read_u32_value(bytes, &mut cursor)?;
     let model3_edge_count = read_u32_value(bytes, &mut cursor)?;
+    let model2_pair_count = read_u32_value(bytes, &mut cursor)?;
     let model2_prefix_count = read_u32_value(bytes, &mut cursor)?;
     let model2_edge_count = read_u32_value(bytes, &mut cursor)?;
     let model1_prefix_count = read_u32_value(bytes, &mut cursor)?;
@@ -452,6 +502,7 @@ fn decode_header(bytes: &[u8]) -> Result<Header, DynError> {
     let model3_pair_offset = read_u64_value(bytes, &mut cursor)?;
     let model3_prefix_offset = read_u64_value(bytes, &mut cursor)?;
     let model3_edge_offset = read_u64_value(bytes, &mut cursor)?;
+    let model2_pair_offset = read_u64_value(bytes, &mut cursor)?;
     let model2_prefix_offset = read_u64_value(bytes, &mut cursor)?;
     let model2_edge_offset = read_u64_value(bytes, &mut cursor)?;
     let model1_prefix_offset = read_u64_value(bytes, &mut cursor)?;
@@ -470,6 +521,7 @@ fn decode_header(bytes: &[u8]) -> Result<Header, DynError> {
         model3_pair_count,
         model3_prefix_count,
         model3_edge_count,
+        model2_pair_count,
         model2_prefix_count,
         model2_edge_count,
         model1_prefix_count,
@@ -480,6 +532,7 @@ fn decode_header(bytes: &[u8]) -> Result<Header, DynError> {
         model3_pair_offset,
         model3_prefix_offset,
         model3_edge_offset,
+        model2_pair_offset,
         model2_prefix_offset,
         model2_edge_offset,
         model1_prefix_offset,

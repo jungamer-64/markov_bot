@@ -1,6 +1,7 @@
 use super::super::super::{
     CHECKSUM_PLACEHOLDER, CompiledStorage, DynError, FLAGS, HEADER_SIZE, Header, MAGIC,
-    NORMALIZATION_FLAGS, PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE, PREFIX2_RECORD_SIZE,
+    NORMALIZATION_FLAGS, PAIR2_RECORD_SIZE, PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE,
+    PREFIX2_RECORD_SIZE,
     PREFIX3_RECORD_SIZE, START_RECORD_SIZE, SectionCounts, SectionSizes, TOKENIZER_VERSION,
     VERSION, align_to_eight, bytes_for_len, checked_add, u32_from_usize, u64_from_usize,
 };
@@ -25,6 +26,8 @@ pub(super) fn build_header(compiled: &CompiledStorage) -> Result<Header, DynErro
     )?;
     let model3_edge_offset =
         advance_with_alignment(&mut offset, sizes.model3_edges, "model3 edge records end")?;
+    let model2_pair_offset =
+        advance_with_alignment(&mut offset, sizes.model2_pairs, "model2 pair records end")?;
     let model2_prefix_offset = advance_with_alignment(
         &mut offset,
         sizes.model2_prefixes,
@@ -52,6 +55,7 @@ pub(super) fn build_header(compiled: &CompiledStorage) -> Result<Header, DynErro
         model3_pair_count: counts.model3_pair,
         model3_prefix_count: counts.model3_prefix,
         model3_edge_count: counts.model3_edge,
+        model2_pair_count: counts.model2_pair,
         model2_prefix_count: counts.model2_prefix,
         model2_edge_count: counts.model2_edge,
         model1_prefix_count: counts.model1_prefix,
@@ -62,6 +66,7 @@ pub(super) fn build_header(compiled: &CompiledStorage) -> Result<Header, DynErro
         model3_pair_offset,
         model3_prefix_offset,
         model3_edge_offset,
+        model2_pair_offset,
         model2_prefix_offset,
         model2_edge_offset,
         model1_prefix_offset,
@@ -84,6 +89,7 @@ pub(super) fn encode_header(header: Header) -> Vec<u8> {
     write_u32(&mut bytes, header.model3_pair_count);
     write_u32(&mut bytes, header.model3_prefix_count);
     write_u32(&mut bytes, header.model3_edge_count);
+    write_u32(&mut bytes, header.model2_pair_count);
     write_u32(&mut bytes, header.model2_prefix_count);
     write_u32(&mut bytes, header.model2_edge_count);
     write_u32(&mut bytes, header.model1_prefix_count);
@@ -94,6 +100,7 @@ pub(super) fn encode_header(header: Header) -> Vec<u8> {
     write_u64(&mut bytes, header.model3_pair_offset);
     write_u64(&mut bytes, header.model3_prefix_offset);
     write_u64(&mut bytes, header.model3_edge_offset);
+    write_u64(&mut bytes, header.model2_pair_offset);
     write_u64(&mut bytes, header.model2_prefix_offset);
     write_u64(&mut bytes, header.model2_edge_offset);
     write_u64(&mut bytes, header.model1_prefix_offset);
@@ -118,6 +125,7 @@ fn section_counts(compiled: &CompiledStorage) -> Result<SectionCounts, DynError>
         model3_pair: u32_from_usize(compiled.model3_pairs.len(), "model3 pair count")?,
         model3_prefix: u32_from_usize(compiled.model3_prefixes.len(), "model3 prefix count")?,
         model3_edge: u32_from_usize(compiled.model3_edges.len(), "model3 edge count")?,
+        model2_pair: u32_from_usize(compiled.model2_pairs.len(), "model2 pair count")?,
         model2_prefix: u32_from_usize(compiled.model2_prefixes.len(), "model2 prefix count")?,
         model2_edge: u32_from_usize(compiled.model2_edges.len(), "model2 edge count")?,
         model1_prefix: u32_from_usize(compiled.model1_prefixes.len(), "model1 prefix count")?,
@@ -145,6 +153,7 @@ fn section_sizes(compiled: &CompiledStorage) -> Result<SectionSizes, DynError> {
             super::super::super::EDGE_RECORD_SIZE,
             "model3 edges",
         )?,
+        model2_pairs: bytes_for_len(compiled.model2_pairs.len(), PAIR2_RECORD_SIZE, "model2 pairs")?,
         model2_prefixes: bytes_for_len(
             compiled.model2_prefixes.len(),
             PREFIX2_RECORD_SIZE,

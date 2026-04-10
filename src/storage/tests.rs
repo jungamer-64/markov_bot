@@ -14,12 +14,13 @@ const FLAGS_OFFSET: usize = 12;
 const TOKENIZER_VERSION_OFFSET: usize = 16;
 const NORMALIZATION_FLAGS_OFFSET: usize = 20;
 const TOKEN_COUNT_OFFSET: usize = 24;
-const VOCAB_OFFSETS_OFFSET_OFFSET: usize = 60;
-const START_OFFSET_OFFSET: usize = 76;
-const MODEL3_PREFIX_OFFSET_OFFSET: usize = 92;
-const MODEL3_EDGE_OFFSET_OFFSET: usize = 100;
-const VOCAB_BLOB_OFFSET_OFFSET: usize = 68;
-const FILE_SIZE_OFFSET: usize = 140;
+const VOCAB_OFFSETS_OFFSET_OFFSET: usize = 64;
+const START_OFFSET_OFFSET: usize = 80;
+const MODEL3_PREFIX_OFFSET_OFFSET: usize = 96;
+const MODEL3_EDGE_OFFSET_OFFSET: usize = 104;
+const MODEL2_PAIR_OFFSET_OFFSET: usize = 112;
+const VOCAB_BLOB_OFFSET_OFFSET: usize = 72;
+const FILE_SIZE_OFFSET: usize = 152;
 
 #[tokio::test]
 async fn load_returns_default_for_missing_file() {
@@ -180,11 +181,42 @@ async fn rejects_non_zero_header_padding() {
     let file_path = write_sample_file("header_padding_corrupt", &sample_chain()).await;
     let mut bytes = fs::read(&file_path).await.expect("read should succeed");
 
+    let token_count = usize::try_from(read_u32_at(&bytes, TOKEN_COUNT_OFFSET)).expect("fits");
     let vocab_offsets_offset =
         usize::try_from(read_u64_at(&bytes, VOCAB_OFFSETS_OFFSET_OFFSET)).expect("offset fits");
-    assert!(HEADER_SIZE < vocab_offsets_offset);
+    let vocab_blob_offset =
+        usize::try_from(read_u64_at(&bytes, VOCAB_BLOB_OFFSET_OFFSET)).expect("offset fits");
+    let start_offset =
+        usize::try_from(read_u64_at(&bytes, START_OFFSET_OFFSET)).expect("offset fits");
 
-    bytes[HEADER_SIZE] = 1;
+    let vocab_offsets_end = vocab_offsets_offset
+        .checked_add(
+            token_count
+                .checked_add(1)
+                .expect("offset len overflow")
+                .checked_mul(8)
+                .expect("offset byte size overflow"),
+        )
+        .expect("offset end overflow");
+    let vocab_blob_size =
+        usize::try_from(read_u64_at(&bytes, vocab_offsets_offset + token_count * 8))
+            .expect("blob size fits");
+    let vocab_blob_end = vocab_blob_offset
+        .checked_add(vocab_blob_size)
+        .expect("blob end overflow");
+
+    let header_aligned_end = HEADER_SIZE.next_multiple_of(8);
+    let padding_ranges = [
+        (header_aligned_end, vocab_offsets_offset),
+        (vocab_offsets_end, vocab_blob_offset),
+        (vocab_blob_end, start_offset),
+    ];
+    let (padding_start, _) = padding_ranges
+        .into_iter()
+        .find(|(start, end)| start < end)
+        .expect("sample file should contain at least one padding range");
+
+    bytes[padding_start] = 1;
 
     fs::write(&file_path, bytes)
         .await
@@ -267,6 +299,27 @@ async fn rejects_broken_bos_token() {
     let vocab_blob_offset =
         usize::try_from(read_u64_at(&bytes, VOCAB_BLOB_OFFSET_OFFSET)).expect("offset fits");
     bytes[vocab_blob_offset] = b'X';
+
+    fs::write(&file_path, bytes)
+        .await
+        .expect("write should succeed");
+
+    assert!(load_chain(&file_path).await.is_err());
+
+    let _ = fs::remove_file(file_path).await;
+}
+
+#[tokio::test]
+async fn rejects_model2_pair_range_out_of_bounds() {
+    let file_path = write_sample_file("model2_pair_range_oob", &sample_chain()).await;
+    let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+
+    let model2_pair_offset =
+        usize::try_from(read_u64_at(&bytes, MODEL2_PAIR_OFFSET_OFFSET)).expect("offset fits");
+    write_u32_at(&mut bytes, model2_pair_offset + 8, u32::MAX);
+
+    let checksum = compute_checksum(bytes.as_slice()).expect("checksum should be computed");
+    write_u64_at(&mut bytes, CHECKSUM_OFFSET, checksum);
 
     fs::write(&file_path, bytes)
         .await
