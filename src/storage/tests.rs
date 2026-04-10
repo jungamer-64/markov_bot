@@ -5,8 +5,9 @@ use tokio::fs;
 use crate::markov::{BOS_ID, MarkovChain};
 
 use super::{
-    CHECKSUM_OFFSET, FLAG_VOCAB_BLOB_RLE, HEADER_SIZE, NORMALIZATION_FLAGS, StorageCompressionMode,
-    TOKENIZER_VERSION, VERSION, compute_checksum, load_chain, save_chain,
+    CHECKSUM_OFFSET, FLAG_VOCAB_BLOB_LZ4_FLEX, FLAG_VOCAB_BLOB_RLE, FLAG_VOCAB_BLOB_ZSTD,
+    HEADER_SIZE, NORMALIZATION_FLAGS, StorageCompressionMode, TOKENIZER_VERSION, VERSION,
+    compute_checksum, load_chain, save_chain,
 };
 
 const TEST_MIN_EDGE_COUNT: u64 = 1;
@@ -236,7 +237,7 @@ async fn writes_and_loads_compressed_vocab_blob() {
     let bytes = fs::read(&file_path).await.expect("read should succeed");
 
     let flags = read_u32_at(&bytes, FLAGS_OFFSET);
-    assert_ne!(flags & FLAG_VOCAB_BLOB_RLE, 0);
+    assert_ne!(flags, 0);
 
     let loaded = load_chain(&file_path).await.expect("load should succeed");
     assert!(loaded.token_to_id.contains_key(&repeated));
@@ -277,16 +278,60 @@ async fn writes_rle_vocab_blob_when_mode_rle() {
         .train_tokens(std::slice::from_ref(&token))
         .expect("training should succeed");
 
+    let file_path =
+        write_sample_file_with_mode("vocab_blob_mode_rle", &chain, StorageCompressionMode::Rle)
+            .await;
+    let bytes = fs::read(&file_path).await.expect("read should succeed");
+
+    let flags = read_u32_at(&bytes, FLAGS_OFFSET);
+    assert_ne!(flags & FLAG_VOCAB_BLOB_RLE, 0);
+
+    let loaded = load_chain(&file_path).await.expect("load should succeed");
+    assert!(loaded.token_to_id.contains_key(&token));
+
+    let _ = fs::remove_file(file_path).await;
+}
+
+#[tokio::test]
+async fn writes_zstd_vocab_blob_when_mode_zstd() {
+    let token = "abcdefg".repeat(128);
+    let mut chain = MarkovChain::default();
+    chain
+        .train_tokens(std::slice::from_ref(&token))
+        .expect("training should succeed");
+
+    let file_path =
+        write_sample_file_with_mode("vocab_blob_mode_zstd", &chain, StorageCompressionMode::Zstd)
+            .await;
+    let bytes = fs::read(&file_path).await.expect("read should succeed");
+
+    let flags = read_u32_at(&bytes, FLAGS_OFFSET);
+    assert_ne!(flags & FLAG_VOCAB_BLOB_ZSTD, 0);
+
+    let loaded = load_chain(&file_path).await.expect("load should succeed");
+    assert!(loaded.token_to_id.contains_key(&token));
+
+    let _ = fs::remove_file(file_path).await;
+}
+
+#[tokio::test]
+async fn writes_lz4_flex_vocab_blob_when_mode_lz4_flex() {
+    let token = "abcdefg".repeat(128);
+    let mut chain = MarkovChain::default();
+    chain
+        .train_tokens(std::slice::from_ref(&token))
+        .expect("training should succeed");
+
     let file_path = write_sample_file_with_mode(
-        "vocab_blob_mode_rle",
+        "vocab_blob_mode_lz4_flex",
         &chain,
-        StorageCompressionMode::VocabBlobRle,
+        StorageCompressionMode::Lz4Flex,
     )
     .await;
     let bytes = fs::read(&file_path).await.expect("read should succeed");
 
     let flags = read_u32_at(&bytes, FLAGS_OFFSET);
-    assert_ne!(flags & FLAG_VOCAB_BLOB_RLE, 0);
+    assert_ne!(flags & FLAG_VOCAB_BLOB_LZ4_FLEX, 0);
 
     let loaded = load_chain(&file_path).await.expect("load should succeed");
     assert!(loaded.token_to_id.contains_key(&token));
@@ -302,7 +347,12 @@ async fn rejects_corrupted_compressed_vocab_blob() {
         .train_tokens(&[repeated])
         .expect("training should succeed");
 
-    let file_path = write_sample_file("compressed_vocab_blob_corrupt", &chain).await;
+    let file_path = write_sample_file_with_mode(
+        "compressed_vocab_blob_corrupt",
+        &chain,
+        StorageCompressionMode::Rle,
+    )
+    .await;
     let mut bytes = fs::read(&file_path).await.expect("read should succeed");
 
     let flags = read_u32_at(&bytes, FLAGS_OFFSET);
@@ -325,6 +375,24 @@ async fn rejects_corrupted_compressed_vocab_blob() {
 }
 
 #[tokio::test]
+async fn rejects_multiple_compression_flags() {
+    let file_path = write_sample_file("multiple_compression_flags", &sample_chain()).await;
+    let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+    write_u32_at(
+        &mut bytes,
+        FLAGS_OFFSET,
+        FLAG_VOCAB_BLOB_RLE | FLAG_VOCAB_BLOB_ZSTD,
+    );
+    fs::write(&file_path, bytes)
+        .await
+        .expect("write should succeed");
+
+    assert!(load_chain(&file_path).await.is_err());
+
+    let _ = fs::remove_file(file_path).await;
+}
+
+#[tokio::test]
 async fn rejects_compressed_vocab_blob_with_impossible_decoded_size() {
     let repeated = "a".repeat(1024);
     let mut chain = MarkovChain::default();
@@ -332,7 +400,12 @@ async fn rejects_compressed_vocab_blob_with_impossible_decoded_size() {
         .train_tokens(std::slice::from_ref(&repeated))
         .expect("training should succeed");
 
-    let file_path = write_sample_file("compressed_vocab_blob_impossible_size", &chain).await;
+    let file_path = write_sample_file_with_mode(
+        "compressed_vocab_blob_impossible_size",
+        &chain,
+        StorageCompressionMode::Rle,
+    )
+    .await;
     let mut bytes = fs::read(&file_path).await.expect("read should succeed");
 
     let flags = read_u32_at(&bytes, FLAGS_OFFSET);

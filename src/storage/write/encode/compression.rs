@@ -1,4 +1,9 @@
-use super::super::super::{FLAG_VOCAB_BLOB_RLE, FLAGS, StorageCompressionMode};
+use lz4_flex::block::compress as lz4_compress;
+
+use super::super::super::{
+    DynError, FLAG_VOCAB_BLOB_LZ4_FLEX, FLAG_VOCAB_BLOB_RLE, FLAG_VOCAB_BLOB_ZSTD, FLAGS,
+    StorageCompressionMode,
+};
 
 const LITERAL_CHUNK_MAX: usize = 128;
 const REPEAT_CHUNK_MIN: usize = 3;
@@ -12,40 +17,61 @@ pub(super) struct EncodedVocabBlob {
 pub(super) fn encode_vocab_blob(
     vocab_blob: &[u8],
     compression_mode: StorageCompressionMode,
-) -> EncodedVocabBlob {
+) -> Result<EncodedVocabBlob, DynError> {
     match compression_mode {
         StorageCompressionMode::Auto => encode_auto(vocab_blob),
-        StorageCompressionMode::Uncompressed => EncodedVocabBlob {
+        StorageCompressionMode::Uncompressed => Ok(EncodedVocabBlob {
             bytes: vocab_blob.to_vec(),
             flags: FLAGS,
-        },
-        StorageCompressionMode::VocabBlobRle => EncodedVocabBlob {
+        }),
+        StorageCompressionMode::Rle => Ok(EncodedVocabBlob {
             bytes: encode_rle(vocab_blob),
             flags: FLAGS | FLAG_VOCAB_BLOB_RLE,
-        },
+        }),
+        StorageCompressionMode::Zstd => Ok(EncodedVocabBlob {
+            bytes: zstd::bulk::compress(vocab_blob, 0)?,
+            flags: FLAGS | FLAG_VOCAB_BLOB_ZSTD,
+        }),
+        StorageCompressionMode::Lz4Flex => Ok(EncodedVocabBlob {
+            bytes: lz4_compress(vocab_blob),
+            flags: FLAGS | FLAG_VOCAB_BLOB_LZ4_FLEX,
+        }),
     }
 }
 
-fn encode_auto(vocab_blob: &[u8]) -> EncodedVocabBlob {
+fn encode_auto(vocab_blob: &[u8]) -> Result<EncodedVocabBlob, DynError> {
     if vocab_blob.is_empty() {
-        return EncodedVocabBlob {
+        return Ok(EncodedVocabBlob {
             bytes: Vec::new(),
             flags: FLAGS,
-        };
+        });
     }
 
-    let encoded = encode_rle(vocab_blob);
-    if encoded.len() < vocab_blob.len() {
+    let mut best = EncodedVocabBlob {
+        bytes: vocab_blob.to_vec(),
+        flags: FLAGS,
+    };
+
+    for candidate in [
         EncodedVocabBlob {
-            bytes: encoded,
+            bytes: encode_rle(vocab_blob),
             flags: FLAGS | FLAG_VOCAB_BLOB_RLE,
-        }
-    } else {
+        },
         EncodedVocabBlob {
-            bytes: vocab_blob.to_vec(),
-            flags: FLAGS,
+            bytes: zstd::bulk::compress(vocab_blob, 0)?,
+            flags: FLAGS | FLAG_VOCAB_BLOB_ZSTD,
+        },
+        EncodedVocabBlob {
+            bytes: lz4_compress(vocab_blob),
+            flags: FLAGS | FLAG_VOCAB_BLOB_LZ4_FLEX,
+        },
+    ] {
+        if candidate.bytes.len() < best.bytes.len() {
+            best = candidate;
         }
     }
+
+    Ok(best)
 }
 
 fn encode_rle(input: &[u8]) -> Vec<u8> {
@@ -114,7 +140,8 @@ mod tests {
     #[test]
     fn auto_compresses_repeated_vocab_blob() {
         let input = vec![b'a'; REPEAT_CHUNK_MIN + 40];
-        let encoded = encode_vocab_blob(input.as_slice(), StorageCompressionMode::Auto);
+        let encoded = encode_vocab_blob(input.as_slice(), StorageCompressionMode::Auto)
+            .expect("auto encoding should succeed");
 
         assert_ne!(encoded.flags, 0);
         assert!(encoded.bytes.len() < input.len());
@@ -123,7 +150,8 @@ mod tests {
     #[test]
     fn auto_keeps_uncompressed_when_not_beneficial() {
         let input = b"abcdefg";
-        let encoded = encode_vocab_blob(input, StorageCompressionMode::Auto);
+        let encoded =
+            encode_vocab_blob(input, StorageCompressionMode::Auto).expect("auto encoding succeeds");
 
         assert_eq!(encoded.flags, 0);
         assert_eq!(encoded.bytes, input);
@@ -132,7 +160,8 @@ mod tests {
     #[test]
     fn uncompressed_mode_never_sets_flag() {
         let input = vec![b'a'; REPEAT_CHUNK_MIN + 40];
-        let encoded = encode_vocab_blob(input.as_slice(), StorageCompressionMode::Uncompressed);
+        let encoded = encode_vocab_blob(input.as_slice(), StorageCompressionMode::Uncompressed)
+            .expect("uncompressed encoding succeeds");
 
         assert_eq!(encoded.flags, 0);
         assert_eq!(encoded.bytes, input);
@@ -141,7 +170,26 @@ mod tests {
     #[test]
     fn rle_mode_sets_flag_even_when_larger() {
         let input = b"abcdefg";
-        let encoded = encode_vocab_blob(input, StorageCompressionMode::VocabBlobRle);
+        let encoded =
+            encode_vocab_blob(input, StorageCompressionMode::Rle).expect("rle encoding succeeds");
+
+        assert_ne!(encoded.flags, 0);
+    }
+
+    #[test]
+    fn zstd_mode_sets_flag() {
+        let input = b"abcdefg";
+        let encoded =
+            encode_vocab_blob(input, StorageCompressionMode::Zstd).expect("zstd encoding succeeds");
+
+        assert_ne!(encoded.flags, 0);
+    }
+
+    #[test]
+    fn lz4_flex_mode_sets_flag() {
+        let input = b"abcdefg";
+        let encoded = encode_vocab_blob(input, StorageCompressionMode::Lz4Flex)
+            .expect("lz4_flex encoding succeeds");
 
         assert_ne!(encoded.flags, 0);
     }

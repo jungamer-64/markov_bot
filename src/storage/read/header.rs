@@ -3,6 +3,7 @@ use super::super::{
     PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE, PREFIX2_RECORD_SIZE, PREFIX3_RECORD_SIZE,
     START_RECORD_SIZE, SUPPORTED_FLAGS, SectionRanges, TOKENIZER_VERSION, VERSION, align_to_eight,
     bytes_for_len, checked_add, compute_checksum, u64_from_usize, usize_from_u32, usize_from_u64,
+    vocab_blob_compression_flags,
 };
 use super::{read_exact, read_u32_value, read_u64_value};
 
@@ -30,6 +31,7 @@ pub(super) fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {
     if header.flags & !SUPPORTED_FLAGS != 0 {
         return Err(format!("unsupported flags: {}", header.flags).into());
     }
+    let _ = vocab_blob_compression_flags(header.flags)?;
     if header.tokenizer_version != TOKENIZER_VERSION {
         return Err(format!(
             "unsupported tokenizer_version: {}",

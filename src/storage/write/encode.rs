@@ -11,7 +11,7 @@ pub(super) fn encode_storage(
     compression_mode: StorageCompressionMode,
 ) -> Result<Vec<u8>, DynError> {
     let encoded_vocab_blob =
-        compression::encode_vocab_blob(compiled.vocab_blob.as_slice(), compression_mode);
+        compression::encode_vocab_blob(compiled.vocab_blob.as_slice(), compression_mode)?;
 
     let mut header = header::build_header(
         compiled,

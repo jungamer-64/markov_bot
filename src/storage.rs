@@ -24,7 +24,9 @@ const MAGIC: [u8; 8] = *b"MKV3BIN\0";
 const VERSION: u32 = 4;
 const FLAGS: u32 = 0;
 const FLAG_VOCAB_BLOB_RLE: u32 = 1 << 0;
-const SUPPORTED_FLAGS: u32 = FLAG_VOCAB_BLOB_RLE;
+const FLAG_VOCAB_BLOB_ZSTD: u32 = 1 << 1;
+const FLAG_VOCAB_BLOB_LZ4_FLEX: u32 = 1 << 2;
+const SUPPORTED_FLAGS: u32 = FLAG_VOCAB_BLOB_RLE | FLAG_VOCAB_BLOB_ZSTD | FLAG_VOCAB_BLOB_LZ4_FLEX;
 const TOKENIZER_VERSION: u32 = 1;
 const NORMALIZATION_FLAGS: u32 = 0;
 const CHECKSUM_PLACEHOLDER: u64 = 0;
@@ -48,7 +50,9 @@ const PREFIX1_RECORD_SIZE: u64 = 20;
 pub enum StorageCompressionMode {
     Auto,
     Uncompressed,
-    VocabBlobRle,
+    Rle,
+    Zstd,
+    Lz4Flex,
 }
 
 impl StorageCompressionMode {
@@ -56,9 +60,11 @@ impl StorageCompressionMode {
         match raw.trim().to_ascii_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
             "none" | "off" | "uncompressed" => Ok(Self::Uncompressed),
-            "rle" | "vocab_rle" | "vocab-blob-rle" => Ok(Self::VocabBlobRle),
+            "rle" | "vocab_rle" | "vocab-blob-rle" => Ok(Self::Rle),
+            "zstd" => Ok(Self::Zstd),
+            "lz4" | "lz4_flex" | "lz4-flex" => Ok(Self::Lz4Flex),
             _ => Err(format!(
-                "unsupported STORAGE_COMPRESSION value: {raw} (expected: auto|none|rle)"
+                "unsupported STORAGE_COMPRESSION value: {raw} (expected: auto|none|rle|zstd|lz4_flex)"
             )
             .into()),
         }
@@ -68,7 +74,9 @@ impl StorageCompressionMode {
         match self {
             Self::Auto => "auto",
             Self::Uncompressed => "none",
-            Self::VocabBlobRle => "rle",
+            Self::Rle => "rle",
+            Self::Zstd => "zstd",
+            Self::Lz4Flex => "lz4_flex",
         }
     }
 }
@@ -180,4 +188,13 @@ fn compute_checksum(bytes: &[u8]) -> Result<u64, DynError> {
     }
 
     Ok(hash)
+}
+
+fn vocab_blob_compression_flags(flags: u32) -> Result<u32, DynError> {
+    let compression_flags = flags & SUPPORTED_FLAGS;
+    if compression_flags.count_ones() > 1 {
+        return Err("multiple vocab blob compression flags are set".into());
+    }
+
+    Ok(compression_flags)
 }

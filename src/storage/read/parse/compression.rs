@@ -1,4 +1,9 @@
-use super::super::super::{DynError, u64_from_usize};
+use lz4_flex::block::decompress_into as lz4_decompress_into;
+
+use super::super::super::{
+    DynError, FLAG_VOCAB_BLOB_LZ4_FLEX, FLAG_VOCAB_BLOB_RLE, FLAG_VOCAB_BLOB_ZSTD, u64_from_usize,
+    vocab_blob_compression_flags,
+};
 
 const REPEAT_BASE: u8 = 128;
 const REPEAT_CHUNK_MIN: usize = 3;
@@ -10,10 +15,18 @@ pub(super) fn decode_vocab_blob(
     expected_size: usize,
     flags: u32,
 ) -> Result<Vec<u8>, DynError> {
-    if flags & super::super::super::FLAG_VOCAB_BLOB_RLE != 0 {
+    let compression_flags = vocab_blob_compression_flags(flags)?;
+
+    if compression_flags == FLAG_VOCAB_BLOB_RLE {
         decode_vocab_blob_rle(vocab_blob_bytes, expected_size)
-    } else {
+    } else if compression_flags == FLAG_VOCAB_BLOB_ZSTD {
+        decode_vocab_blob_zstd(vocab_blob_bytes, expected_size)
+    } else if compression_flags == FLAG_VOCAB_BLOB_LZ4_FLEX {
+        decode_vocab_blob_lz4_flex(vocab_blob_bytes, expected_size)
+    } else if compression_flags == 0 {
         decode_vocab_blob_plain(vocab_blob_bytes, expected_size)
+    } else {
+        Err("unsupported vocab blob compression flags".into())
     }
 }
 
@@ -71,6 +84,31 @@ fn decode_vocab_blob_rle(
 
     if cursor != vocab_blob_bytes.len() {
         return Err("compressed vocab blob has trailing bytes".into());
+    }
+
+    Ok(decoded)
+}
+
+fn decode_vocab_blob_zstd(
+    vocab_blob_bytes: &[u8],
+    expected_size: usize,
+) -> Result<Vec<u8>, DynError> {
+    let decoded = zstd::bulk::decompress(vocab_blob_bytes, expected_size)?;
+    if decoded.len() != expected_size {
+        return Err("zstd vocab blob size does not match expected decoded size".into());
+    }
+
+    Ok(decoded)
+}
+
+fn decode_vocab_blob_lz4_flex(
+    vocab_blob_bytes: &[u8],
+    expected_size: usize,
+) -> Result<Vec<u8>, DynError> {
+    let mut decoded = vec![0; expected_size];
+    let written = lz4_decompress_into(vocab_blob_bytes, decoded.as_mut_slice())?;
+    if written != expected_size {
+        return Err("lz4_flex vocab blob size does not match expected decoded size".into());
     }
 
     Ok(decoded)
