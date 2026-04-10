@@ -35,7 +35,7 @@ pub(super) struct Header {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct StartRecord {
     pub(super) prefix_id: u32,
-    pub(super) cumulative: u32,
+    pub(super) cumulative: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -51,7 +51,7 @@ pub(super) struct Prefix3Record {
     pub(super) w3: u32,
     pub(super) edge_start: u32,
     pub(super) edge_len: u32,
-    pub(super) total: u32,
+    pub(super) total: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,7 +60,7 @@ pub(super) struct Prefix2Record {
     pub(super) w2: u32,
     pub(super) edge_start: u32,
     pub(super) edge_len: u32,
-    pub(super) total: u32,
+    pub(super) total: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -68,13 +68,13 @@ pub(super) struct Prefix1Record {
     pub(super) w1: u32,
     pub(super) edge_start: u32,
     pub(super) edge_len: u32,
-    pub(super) total: u32,
+    pub(super) total: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct EdgeRecord {
     pub(super) next: u32,
-    pub(super) cumulative: u32,
+    pub(super) cumulative: u64,
 }
 
 #[derive(Debug)]

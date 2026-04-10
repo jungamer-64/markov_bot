@@ -44,7 +44,7 @@ pub(super) fn parse_start_records(
     for _ in 0..count {
         records.push(StartRecord {
             prefix_id: read_u32_value(bytes, &mut cursor)?,
-            cumulative: read_u32_value(bytes, &mut cursor)?,
+            cumulative: read_u64_value(bytes, &mut cursor)?,
         });
     }
 
@@ -92,7 +92,7 @@ pub(super) fn parse_prefix3_records(
             w3: read_u32_value(bytes, &mut cursor)?,
             edge_start: read_u32_value(bytes, &mut cursor)?,
             edge_len: read_u32_value(bytes, &mut cursor)?,
-            total: read_u32_value(bytes, &mut cursor)?,
+            total: read_u64_value(bytes, &mut cursor)?,
         });
     }
 
@@ -117,7 +117,7 @@ pub(super) fn parse_prefix2_records(
             w2: read_u32_value(bytes, &mut cursor)?,
             edge_start: read_u32_value(bytes, &mut cursor)?,
             edge_len: read_u32_value(bytes, &mut cursor)?,
-            total: read_u32_value(bytes, &mut cursor)?,
+            total: read_u64_value(bytes, &mut cursor)?,
         });
     }
 
@@ -141,7 +141,7 @@ pub(super) fn parse_prefix1_records(
             w1: read_u32_value(bytes, &mut cursor)?,
             edge_start: read_u32_value(bytes, &mut cursor)?,
             edge_len: read_u32_value(bytes, &mut cursor)?,
-            total: read_u32_value(bytes, &mut cursor)?,
+            total: read_u64_value(bytes, &mut cursor)?,
         });
     }
 
@@ -160,7 +160,7 @@ pub(super) fn parse_edge_records(bytes: &[u8], count: usize) -> Result<Vec<EdgeR
     for _ in 0..count {
         records.push(EdgeRecord {
             next: read_u32_value(bytes, &mut cursor)?,
-            cumulative: read_u32_value(bytes, &mut cursor)?,
+            cumulative: read_u64_value(bytes, &mut cursor)?,
         });
     }
 

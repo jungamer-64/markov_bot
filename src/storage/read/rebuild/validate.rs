@@ -138,7 +138,7 @@ pub(super) fn validate_starts(
     starts: &[StartRecord],
     model3_prefix_count: usize,
 ) -> Result<(), DynError> {
-    let mut previous_cumulative = 0_u32;
+    let mut previous_cumulative = 0_u64;
     let mut seen = vec![false; model3_prefix_count];
 
     for record in starts {
@@ -165,7 +165,7 @@ fn validate_prefix_edges(
     edges: &[EdgeRecord],
     edge_start: u32,
     edge_len: u32,
-    total: u32,
+    total: u64,
     token_count: u32,
     context: &str,
 ) -> Result<(), DynError> {
@@ -187,7 +187,7 @@ fn validate_prefix_edges(
 
     let edge_slice = &edges[start..end];
     let mut previous_next = None;
-    let mut previous_cumulative = 0_u32;
+    let mut previous_cumulative = 0_u64;
 
     for edge in edge_slice {
         validate_token_id(edge.next, token_count, context)?;

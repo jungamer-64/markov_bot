@@ -20,7 +20,7 @@ use types::{
 };
 
 const MAGIC: [u8; 8] = *b"MKV3BIN\0";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const FLAGS: u32 = 0;
 const TOKENIZER_VERSION: u32 = 1;
 const NORMALIZATION_FLAGS: u32 = 0;
@@ -33,12 +33,12 @@ const CHECKSUM_OFFSET: usize = HEADER_SIZE - CHECKSUM_SIZE;
 const FNV1A64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-const START_RECORD_SIZE: u64 = 8;
+const START_RECORD_SIZE: u64 = 12;
 const PAIR3_RECORD_SIZE: u64 = 16;
-const PREFIX3_RECORD_SIZE: u64 = 16;
-const EDGE_RECORD_SIZE: u64 = 8;
-const PREFIX2_RECORD_SIZE: u64 = 20;
-const PREFIX1_RECORD_SIZE: u64 = 16;
+const PREFIX3_RECORD_SIZE: u64 = 20;
+const EDGE_RECORD_SIZE: u64 = 12;
+const PREFIX2_RECORD_SIZE: u64 = 24;
+const PREFIX1_RECORD_SIZE: u64 = 20;
 
 pub async fn load_chain(path: &Path) -> Result<MarkovChain, DynError> {
     let bytes = match fs::read(path).await {

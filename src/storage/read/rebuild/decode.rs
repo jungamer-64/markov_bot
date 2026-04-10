@@ -10,7 +10,7 @@ pub(super) fn decode_starts(
     model3_keys: &[[TokenId; 3]],
 ) -> Result<HashMap<[TokenId; 3], Count>, DynError> {
     let mut decoded = HashMap::new();
-    let mut previous = 0_u32;
+    let mut previous = 0_u64;
 
     for record in starts {
         let delta = record
@@ -26,7 +26,7 @@ pub(super) fn decode_starts(
 
         let entry = decoded.entry(prefix).or_insert(0_u64);
         *entry = (*entry)
-            .checked_add(u64::from(delta))
+            .checked_add(delta)
             .ok_or("start count overflow while decoding")?;
     }
 
@@ -91,7 +91,7 @@ fn decode_edge_map(
     let edge_slice = edges.get(start..end).ok_or("edge range is out of bounds")?;
 
     let mut map = HashMap::new();
-    let mut previous = 0_u32;
+    let mut previous = 0_u64;
 
     for edge in edge_slice {
         let delta = edge
@@ -99,7 +99,7 @@ fn decode_edge_map(
             .checked_sub(previous)
             .ok_or("edge cumulative underflow")?;
         previous = edge.cumulative;
-        map.insert(edge.next, u64::from(delta));
+        map.insert(edge.next, delta);
     }
 
     Ok(map)

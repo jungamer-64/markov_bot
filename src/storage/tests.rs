@@ -2,11 +2,11 @@ use rand::{SeedableRng, rngs::StdRng};
 use tempfile::{Builder, TempPath, tempdir};
 use tokio::fs;
 
-use crate::markov::MarkovChain;
+use crate::markov::{BOS_ID, MarkovChain};
 
 use super::{
     CHECKSUM_OFFSET, FLAGS, HEADER_SIZE, NORMALIZATION_FLAGS, TOKENIZER_VERSION, VERSION,
-    load_chain, save_chain,
+    compute_checksum, load_chain, save_chain,
 };
 
 const VERSION_OFFSET: usize = 8;
@@ -16,6 +16,7 @@ const NORMALIZATION_FLAGS_OFFSET: usize = 20;
 const TOKEN_COUNT_OFFSET: usize = 24;
 const VOCAB_OFFSETS_OFFSET_OFFSET: usize = 60;
 const START_OFFSET_OFFSET: usize = 76;
+const MODEL3_PREFIX_OFFSET_OFFSET: usize = 92;
 const MODEL3_EDGE_OFFSET_OFFSET: usize = 100;
 const VOCAB_BLOB_OFFSET_OFFSET: usize = 68;
 const FILE_SIZE_OFFSET: usize = 140;
@@ -228,8 +229,8 @@ async fn rejects_non_monotonic_edge_cumulative() {
 
     let model3_edge_offset =
         usize::try_from(read_u64_at(&bytes, MODEL3_EDGE_OFFSET_OFFSET)).expect("offset fits");
-    let first_cumulative = read_u32_at(&bytes, model3_edge_offset + 4);
-    write_u32_at(&mut bytes, model3_edge_offset + 12, first_cumulative);
+    let first_cumulative = read_u64_at(&bytes, model3_edge_offset + 4);
+    write_u64_at(&mut bytes, model3_edge_offset + 16, first_cumulative);
 
     fs::write(&file_path, bytes)
         .await
@@ -272,6 +273,49 @@ async fn rejects_broken_bos_token() {
         .expect("write should succeed");
 
     assert!(load_chain(&file_path).await.is_err());
+
+    let _ = fs::remove_file(file_path).await;
+}
+
+#[tokio::test]
+async fn loads_cumulative_values_beyond_u32_max() {
+    let mut chain = MarkovChain::default();
+    chain
+        .train_tokens(&["x".to_owned()])
+        .expect("training should succeed");
+
+    let file_path = write_sample_file("u64_cumulative", &chain).await;
+    let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+
+    let start_offset =
+        usize::try_from(read_u64_at(&bytes, START_OFFSET_OFFSET)).expect("offset fits");
+    let model3_prefix_offset =
+        usize::try_from(read_u64_at(&bytes, MODEL3_PREFIX_OFFSET_OFFSET)).expect("offset fits");
+    let model3_edge_offset =
+        usize::try_from(read_u64_at(&bytes, MODEL3_EDGE_OFFSET_OFFSET)).expect("offset fits");
+
+    let huge = u64::from(u32::MAX) + 10;
+
+    write_u64_at(&mut bytes, start_offset + 4, huge);
+    write_u64_at(&mut bytes, model3_prefix_offset + 12, huge);
+    write_u64_at(&mut bytes, model3_edge_offset + 4, huge);
+
+    let checksum = compute_checksum(bytes.as_slice()).expect("checksum should be computed");
+    write_u64_at(&mut bytes, CHECKSUM_OFFSET, checksum);
+
+    fs::write(&file_path, bytes)
+        .await
+        .expect("write should succeed");
+
+    let loaded = load_chain(&file_path).await.expect("load should succeed");
+    assert_eq!(loaded.starts.get(&[BOS_ID, BOS_ID, BOS_ID]), Some(&huge));
+
+    let edges = loaded
+        .model3
+        .get(&[BOS_ID, BOS_ID, BOS_ID])
+        .expect("model3 prefix should exist");
+    let total: u64 = edges.values().copied().sum();
+    assert_eq!(total, huge);
 
     let _ = fs::remove_file(file_path).await;
 }

@@ -59,7 +59,7 @@ fn write_starts(
     write_at_offset(bytes, header.start_offset, |target| {
         for record in &compiled.starts {
             write_u32(target, record.prefix_id);
-            write_u32(target, record.cumulative);
+            write_u64(target, record.cumulative);
         }
     })
 }
@@ -89,7 +89,7 @@ fn write_model3_prefixes(
             write_u32(target, record.w3);
             write_u32(target, record.edge_start);
             write_u32(target, record.edge_len);
-            write_u32(target, record.total);
+            write_u64(target, record.total);
         }
     })
 }
@@ -102,7 +102,7 @@ fn write_model3_edges(
     write_at_offset(bytes, header.model3_edge_offset, |target| {
         for record in &compiled.model3_edges {
             write_u32(target, record.next);
-            write_u32(target, record.cumulative);
+            write_u64(target, record.cumulative);
         }
     })
 }
@@ -118,7 +118,7 @@ fn write_model2_prefixes(
             write_u32(target, record.w2);
             write_u32(target, record.edge_start);
             write_u32(target, record.edge_len);
-            write_u32(target, record.total);
+            write_u64(target, record.total);
         }
     })
 }
@@ -131,7 +131,7 @@ fn write_model2_edges(
     write_at_offset(bytes, header.model2_edge_offset, |target| {
         for record in &compiled.model2_edges {
             write_u32(target, record.next);
-            write_u32(target, record.cumulative);
+            write_u64(target, record.cumulative);
         }
     })
 }
@@ -146,7 +146,7 @@ fn write_model1_prefixes(
             write_u32(target, record.w1);
             write_u32(target, record.edge_start);
             write_u32(target, record.edge_len);
-            write_u32(target, record.total);
+            write_u64(target, record.total);
         }
     })
 }
@@ -159,7 +159,7 @@ fn write_model1_edges(
     write_at_offset(bytes, header.model1_edge_offset, |target| {
         for record in &compiled.model1_edges {
             write_u32(target, record.next);
-            write_u32(target, record.cumulative);
+            write_u64(target, record.cumulative);
         }
     })
 }

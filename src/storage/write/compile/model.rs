@@ -119,14 +119,13 @@ pub(super) fn build_starts(
     entries.sort_unstable_by_key(|(prefix, _)| *prefix);
 
     let mut records = Vec::new();
-    let mut cumulative = 0_u32;
+    let mut cumulative = 0_u64;
 
     for (prefix, count) in entries {
         let Some(prefix_id) = prefix_to_id.get(&prefix).copied() else {
             return Err("start prefix is missing from model3 prefixes".into());
         };
 
-        let count = u32::try_from(count).map_err(|_| "start count exceeds u32 range")?;
         cumulative = cumulative
             .checked_add(count)
             .ok_or("start cumulative overflow")?;
@@ -206,7 +205,7 @@ fn append_edges(
     edges: &mut Vec<EdgeRecord>,
     token_count: u32,
     context: &str,
-) -> Result<(u32, u32, u32), DynError> {
+) -> Result<(u32, u32, u64), DynError> {
     let edge_start = u32_from_usize(edges.len(), "edge start")?;
     let sorted_edges = sorted_non_zero_edges(source);
     let cumulative = append_sorted_edges(sorted_edges.as_slice(), edges, token_count, context)?;
@@ -230,16 +229,14 @@ fn append_sorted_edges(
     edges: &mut Vec<EdgeRecord>,
     token_count: u32,
     context: &str,
-) -> Result<u32, DynError> {
-    let mut cumulative = 0_u32;
+) -> Result<u64, DynError> {
+    let mut cumulative = 0_u64;
 
     for (next, count) in sorted_edges.iter().copied() {
         validate_token_id(next, token_count, context)?;
 
-        let weight =
-            u32::try_from(count).map_err(|_| format!("{context} count exceeds u32 range"))?;
         cumulative = cumulative
-            .checked_add(weight)
+            .checked_add(count)
             .ok_or_else(|| format!("{context} cumulative overflow"))?;
 
         edges.push(EdgeRecord { next, cumulative });
