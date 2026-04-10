@@ -35,25 +35,20 @@ impl MarkovChain {
     pub fn generate_sentence<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
-        min_words: usize,
         max_words: usize,
     ) -> Option<String> {
-        if self.starts.is_empty() || min_words == 0 || max_words == 0 || min_words > max_words {
+        if self.starts.is_empty() || max_words == 0 {
             return None;
         }
 
-        let target_len = rng.random_range(min_words..=max_words);
+        let target_len = rng.random_range(1..=max_words);
         let mut words = self.generate_tokens(rng, target_len)?;
-
-        if words.len() < min_words {
-            return None;
-        }
 
         if words.len() > max_words {
             words.truncate(max_words);
         }
 
-        Some(words.join(" "))
+        Some(words.join(""))
     }
 
     fn generate_tokens<R: Rng + ?Sized>(
@@ -136,23 +131,29 @@ fn choose_weighted_key<'a, R: Rng + ?Sized>(
 
 #[cfg(test)]
 mod tests {
-    use rand::{SeedableRng, rngs::StdRng};
+    use rand::{RngExt, SeedableRng, rngs::StdRng};
 
     use super::MarkovChain;
 
     #[test]
-    fn trains_and_generates_in_requested_range() {
+    fn trains_and_generates_sentence_without_spaces() {
         let mut chain = MarkovChain::default();
         chain.train_tokens(&tokens(["今日", "は", "良い", "天気", "です", "ね"]));
         chain.train_tokens(&tokens(["今日", "は", "少し", "寒い", "です", "ね"]));
 
         let mut rng = StdRng::seed_from_u64(42);
+        let mut expected_rng = StdRng::seed_from_u64(42);
+        let expected_target_len = expected_rng.random_range(1..=20);
+        let expected_tokens = chain
+            .generate_tokens(&mut expected_rng, expected_target_len)
+            .expect("tokens should be generated");
+
         let sentence = chain
-            .generate_sentence(&mut rng, 5, 20)
+            .generate_sentence(&mut rng, 20)
             .expect("sentence should be generated");
 
-        let word_count = sentence.split_whitespace().count();
-        assert!((5..=20).contains(&word_count));
+        assert_eq!(sentence, expected_tokens.join(""));
+        assert!(!sentence.chars().any(char::is_whitespace));
     }
 
     #[test]
@@ -161,7 +162,7 @@ mod tests {
         chain.train_tokens(&tokens(["短い", "文"]));
 
         let mut rng = StdRng::seed_from_u64(1);
-        assert!(chain.generate_sentence(&mut rng, 5, 20).is_none());
+        assert!(chain.generate_sentence(&mut rng, 20).is_none());
     }
 
     fn tokens<const N: usize>(items: [&str; N]) -> Vec<String> {
