@@ -1,8 +1,8 @@
 use super::super::{
-    CHECKSUM, DynError, EDGE_RECORD_SIZE, FLAGS, HEADER_SIZE, Header, MAGIC, NORMALIZATION_FLAGS,
+    DynError, EDGE_RECORD_SIZE, FLAGS, HEADER_SIZE, Header, MAGIC, NORMALIZATION_FLAGS,
     PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE, PREFIX2_RECORD_SIZE, PREFIX3_RECORD_SIZE,
-    START_RECORD_SIZE, SectionRanges, TOKENIZER_VERSION, VERSION, bytes_for_len, checked_add,
-    u64_from_usize, usize_from_u32, usize_from_u64,
+    START_RECORD_SIZE, SectionRanges, TOKENIZER_VERSION, VERSION, align_to_eight, bytes_for_len,
+    checked_add, compute_checksum, u64_from_usize, usize_from_u32, usize_from_u64,
 };
 use super::{read_exact, read_u32_value, read_u64_value};
 
@@ -32,10 +32,6 @@ pub(super) fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {
         )
         .into());
     }
-    if header.checksum != CHECKSUM {
-        return Err(format!("unsupported checksum value: {}", header.checksum).into());
-    }
-
     let file_size = u64_from_usize(bytes.len(), "file size")?;
     if header.file_size != file_size {
         return Err(format!(
@@ -65,10 +61,26 @@ pub(super) fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {
         return Err("section offsets are not ordered".into());
     }
 
+    if ordered_offsets.iter().any(|offset| offset % 8 != 0) {
+        return Err("section offsets must be 8-byte aligned".into());
+    }
+
+    let expected_checksum = compute_checksum(bytes)?;
+    if header.checksum != expected_checksum {
+        return Err(format!(
+            "checksum mismatch: header={}, expected={expected_checksum}",
+            header.checksum
+        )
+        .into());
+    }
+
     Ok(header)
 }
 
-pub(super) fn build_section_ranges(header: &Header) -> Result<SectionRanges, DynError> {
+pub(super) fn build_section_ranges(
+    bytes: &[u8],
+    header: &Header,
+) -> Result<SectionRanges, DynError> {
     let vocab_offsets_len = usize_from_u32(
         header
             .token_count
@@ -166,66 +178,134 @@ pub(super) fn build_section_ranges(header: &Header) -> Result<SectionRanges, Dyn
         model1_edges,
     };
 
-    validate_section_layout(header, &ranges)?;
+    validate_section_layout(bytes, header, &ranges)?;
 
     Ok(ranges)
 }
 
-fn validate_section_layout(header: &Header, ranges: &SectionRanges) -> Result<(), DynError> {
-    ensure_non_overlapping(
-        "vocab offsets",
-        &ranges.vocab_offsets,
-        "vocab blob",
-        ranges.vocab_blob_area.start,
-    )?;
-    ensure_non_overlapping(
-        "vocab blob",
-        &ranges.vocab_blob_area,
-        "start records",
-        ranges.starts.start,
-    )?;
-    ensure_non_overlapping(
-        "start records",
-        &ranges.starts,
-        "model3 pairs",
-        ranges.model3_pairs.start,
-    )?;
-    ensure_non_overlapping(
-        "model3 pairs",
-        &ranges.model3_pairs,
-        "model3 prefixes",
-        ranges.model3_prefixes.start,
-    )?;
-    ensure_non_overlapping(
-        "model3 prefixes",
-        &ranges.model3_prefixes,
-        "model3 edges",
-        ranges.model3_edges.start,
-    )?;
-    ensure_non_overlapping(
-        "model3 edges",
-        &ranges.model3_edges,
-        "model2 prefixes",
-        ranges.model2_prefixes.start,
-    )?;
-    ensure_non_overlapping(
-        "model2 prefixes",
-        &ranges.model2_prefixes,
-        "model2 edges",
-        ranges.model2_edges.start,
-    )?;
-    ensure_non_overlapping(
-        "model2 edges",
-        &ranges.model2_edges,
-        "model1 prefixes",
-        ranges.model1_prefixes.start,
-    )?;
-    ensure_non_overlapping(
-        "model1 prefixes",
-        &ranges.model1_prefixes,
-        "model1 edges",
-        ranges.model1_edges.start,
-    )?;
+fn validate_section_layout(
+    bytes: &[u8],
+    header: &Header,
+    ranges: &SectionRanges,
+) -> Result<(), DynError> {
+    let aligned_header_end = align_to_eight(u64_from_usize(HEADER_SIZE, "header size")?);
+    let aligned_header_end = usize_from_u64(aligned_header_end, "aligned header size")?;
+
+    if ranges.vocab_offsets.start < aligned_header_end {
+        return Err("vocab offsets section starts before aligned header end".into());
+    }
+
+    let non_overlap_checks = [
+        (
+            "vocab offsets",
+            &ranges.vocab_offsets,
+            "vocab blob",
+            ranges.vocab_blob_area.start,
+        ),
+        (
+            "vocab blob",
+            &ranges.vocab_blob_area,
+            "start records",
+            ranges.starts.start,
+        ),
+        (
+            "start records",
+            &ranges.starts,
+            "model3 pairs",
+            ranges.model3_pairs.start,
+        ),
+        (
+            "model3 pairs",
+            &ranges.model3_pairs,
+            "model3 prefixes",
+            ranges.model3_prefixes.start,
+        ),
+        (
+            "model3 prefixes",
+            &ranges.model3_prefixes,
+            "model3 edges",
+            ranges.model3_edges.start,
+        ),
+        (
+            "model3 edges",
+            &ranges.model3_edges,
+            "model2 prefixes",
+            ranges.model2_prefixes.start,
+        ),
+        (
+            "model2 prefixes",
+            &ranges.model2_prefixes,
+            "model2 edges",
+            ranges.model2_edges.start,
+        ),
+        (
+            "model2 edges",
+            &ranges.model2_edges,
+            "model1 prefixes",
+            ranges.model1_prefixes.start,
+        ),
+        (
+            "model1 prefixes",
+            &ranges.model1_prefixes,
+            "model1 edges",
+            ranges.model1_edges.start,
+        ),
+    ];
+    for (left_name, left_range, right_name, right_start) in non_overlap_checks {
+        ensure_non_overlapping(left_name, left_range, right_name, right_start)?;
+    }
+
+    let padding_checks = [
+        (aligned_header_end, ranges.vocab_offsets.start, "header"),
+        (
+            ranges.vocab_offsets.end,
+            ranges.vocab_blob_area.start,
+            "vocab offsets",
+        ),
+        (
+            ranges.vocab_blob_area.end,
+            ranges.starts.start,
+            "vocab blob",
+        ),
+        (
+            ranges.starts.end,
+            ranges.model3_pairs.start,
+            "start records",
+        ),
+        (
+            ranges.model3_pairs.end,
+            ranges.model3_prefixes.start,
+            "model3 pairs",
+        ),
+        (
+            ranges.model3_prefixes.end,
+            ranges.model3_edges.start,
+            "model3 prefixes",
+        ),
+        (
+            ranges.model3_edges.end,
+            ranges.model2_prefixes.start,
+            "model3 edges",
+        ),
+        (
+            ranges.model2_prefixes.end,
+            ranges.model2_edges.start,
+            "model2 prefixes",
+        ),
+        (
+            ranges.model2_edges.end,
+            ranges.model1_prefixes.start,
+            "model2 edges",
+        ),
+        (
+            ranges.model1_prefixes.end,
+            ranges.model1_edges.start,
+            "model1 prefixes",
+        ),
+    ];
+    for (start, end, context) in padding_checks {
+        validate_zero_padding(bytes, start, end, context)?;
+    }
 
     let file_size = usize_from_u64(header.file_size, "file_size")?;
     if ranges.model1_edges.end != file_size {
@@ -243,6 +323,26 @@ fn ensure_non_overlapping(
 ) -> Result<(), DynError> {
     if left_range.end > right_start {
         return Err(format!("{left_name} section overlaps {right_name} section").into());
+    }
+
+    Ok(())
+}
+
+fn validate_zero_padding(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    context: &str,
+) -> Result<(), DynError> {
+    if start > end {
+        return Err(format!("padding range after {context} is invalid").into());
+    }
+
+    let slice = bytes
+        .get(start..end)
+        .ok_or_else(|| format!("padding range after {context} is out of bounds"))?;
+    if slice.iter().any(|byte| *byte != 0) {
+        return Err(format!("non-zero padding detected after {context} section").into());
     }
 
     Ok(())

@@ -6,7 +6,7 @@ mod rebuild;
 
 pub(super) fn decode_chain(bytes: &[u8]) -> Result<MarkovChain, DynError> {
     let header = header::validate_header(bytes)?;
-    let ranges = header::build_section_ranges(&header)?;
+    let ranges = header::build_section_ranges(bytes, &header)?;
     let parsed = parse::parse_storage(bytes, &header, &ranges)?;
 
     rebuild::rebuild_chain(parsed)

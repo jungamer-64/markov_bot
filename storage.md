@@ -227,7 +227,7 @@ struct Header {
     model1_edge_offset: u64,
 
     file_size: u64,
-    checksum: u64,    // v1 では 0 可。将来用予約でもよい
+    checksum: u64,    // v1 実装では FNV-1a 64bit。計算時は checksum フィールドを 0 として扱う
 }
 ````
 
@@ -748,8 +748,6 @@ v1 では order-3 のみ `(w1, w2)` による第 1 段索引を持つ。
 
 ## 将来の改善候補
 
-- checksum の厳密化
-- セクションごとの整合性検査強化
 - 64bit cumulative 対応
 - 低頻度語の pruning
 - 温度付きサンプリング

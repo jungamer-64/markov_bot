@@ -1,8 +1,8 @@
 use super::super::super::{
-    CHECKSUM, CompiledStorage, DynError, FLAGS, HEADER_SIZE, Header, MAGIC, NORMALIZATION_FLAGS,
-    PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE, PREFIX2_RECORD_SIZE, PREFIX3_RECORD_SIZE,
-    START_RECORD_SIZE, SectionCounts, SectionSizes, TOKENIZER_VERSION, VERSION, align_to_eight,
-    bytes_for_len, checked_add, u32_from_usize, u64_from_usize,
+    CHECKSUM_PLACEHOLDER, CompiledStorage, DynError, FLAGS, HEADER_SIZE, Header, MAGIC,
+    NORMALIZATION_FLAGS, PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE, PREFIX2_RECORD_SIZE,
+    PREFIX3_RECORD_SIZE, START_RECORD_SIZE, SectionCounts, SectionSizes, TOKENIZER_VERSION,
+    VERSION, align_to_eight, bytes_for_len, checked_add, u32_from_usize, u64_from_usize,
 };
 
 pub(super) fn build_header(compiled: &CompiledStorage) -> Result<Header, DynError> {
@@ -67,7 +67,7 @@ pub(super) fn build_header(compiled: &CompiledStorage) -> Result<Header, DynErro
         model1_prefix_offset,
         model1_edge_offset,
         file_size,
-        checksum: CHECKSUM,
+        checksum: CHECKSUM_PLACEHOLDER,
     })
 }
 

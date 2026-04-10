@@ -24,9 +24,14 @@ const VERSION: u32 = 1;
 const FLAGS: u32 = 0;
 const TOKENIZER_VERSION: u32 = 1;
 const NORMALIZATION_FLAGS: u32 = 0;
-const CHECKSUM: u64 = 0;
+const CHECKSUM_PLACEHOLDER: u64 = 0;
 
 const HEADER_SIZE: usize = 156;
+const CHECKSUM_SIZE: usize = std::mem::size_of::<u64>();
+const CHECKSUM_OFFSET: usize = HEADER_SIZE - CHECKSUM_SIZE;
+
+const FNV1A64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 const START_RECORD_SIZE: u64 = 8;
 const PAIR3_RECORD_SIZE: u64 = 16;
@@ -113,4 +118,26 @@ fn u32_from_usize(value: usize, context: &str) -> Result<u32, DynError> {
 
 fn u64_from_usize(value: usize, context: &str) -> Result<u64, DynError> {
     u64::try_from(value).map_err(|_| format!("{context} exceeds u64 range").into())
+}
+
+fn compute_checksum(bytes: &[u8]) -> Result<u64, DynError> {
+    if bytes.len() < HEADER_SIZE {
+        return Err("cannot compute checksum: data is shorter than header".into());
+    }
+
+    let checksum_range = CHECKSUM_OFFSET..(CHECKSUM_OFFSET + CHECKSUM_SIZE);
+    let mut hash = FNV1A64_OFFSET_BASIS;
+
+    for (index, byte) in bytes.iter().enumerate() {
+        let normalized = if checksum_range.contains(&index) {
+            0_u8
+        } else {
+            *byte
+        };
+
+        hash ^= u64::from(normalized);
+        hash = hash.wrapping_mul(FNV1A64_PRIME);
+    }
+
+    Ok(hash)
 }

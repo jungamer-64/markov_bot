@@ -1,27 +1,32 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use rand::{SeedableRng, rngs::StdRng};
+use tempfile::{Builder, TempPath, tempdir};
 use tokio::fs;
 
 use crate::markov::MarkovChain;
 
-use super::{FLAGS, NORMALIZATION_FLAGS, TOKENIZER_VERSION, VERSION, load_chain, save_chain};
+use super::{
+    CHECKSUM_OFFSET, FLAGS, HEADER_SIZE, NORMALIZATION_FLAGS, TOKENIZER_VERSION, VERSION,
+    load_chain, save_chain,
+};
 
 const VERSION_OFFSET: usize = 8;
 const FLAGS_OFFSET: usize = 12;
 const TOKENIZER_VERSION_OFFSET: usize = 16;
 const NORMALIZATION_FLAGS_OFFSET: usize = 20;
 const TOKEN_COUNT_OFFSET: usize = 24;
+const VOCAB_OFFSETS_OFFSET_OFFSET: usize = 60;
 const START_OFFSET_OFFSET: usize = 76;
 const MODEL3_EDGE_OFFSET_OFFSET: usize = 100;
 const VOCAB_BLOB_OFFSET_OFFSET: usize = 68;
 const FILE_SIZE_OFFSET: usize = 140;
-const CHECKSUM_OFFSET: usize = 148;
 
 #[tokio::test]
 async fn load_returns_default_for_missing_file() {
-    let file_path = temp_file_path("missing");
-    let chain = load_chain(&file_path).await.expect("load should succeed");
+    let temp_dir = tempdir().expect("tempdir should be created");
+    let file_path = temp_dir.path().join("missing.mkv3");
+    let chain = load_chain(file_path.as_path())
+        .await
+        .expect("load should succeed");
 
     assert!(chain.starts.is_empty());
 }
@@ -145,10 +150,41 @@ async fn rejects_file_size_mismatch() {
 }
 
 #[tokio::test]
-async fn rejects_non_zero_checksum() {
+async fn rejects_checksum_mismatch() {
     let file_path = write_sample_file("checksum_non_zero", &sample_chain()).await;
     let mut bytes = fs::read(&file_path).await.expect("read should succeed");
     write_u64_at(&mut bytes, CHECKSUM_OFFSET, 1);
+    fs::write(&file_path, bytes)
+        .await
+        .expect("write should succeed");
+
+    assert!(load_chain(&file_path).await.is_err());
+
+    let _ = fs::remove_file(file_path).await;
+}
+
+#[tokio::test]
+async fn writes_non_zero_checksum() {
+    let file_path = write_sample_file("checksum_written", &sample_chain()).await;
+    let bytes = fs::read(&file_path).await.expect("read should succeed");
+
+    let checksum = read_u64_at(&bytes, CHECKSUM_OFFSET);
+    assert_ne!(checksum, 0);
+
+    let _ = fs::remove_file(file_path).await;
+}
+
+#[tokio::test]
+async fn rejects_non_zero_header_padding() {
+    let file_path = write_sample_file("header_padding_corrupt", &sample_chain()).await;
+    let mut bytes = fs::read(&file_path).await.expect("read should succeed");
+
+    let vocab_offsets_offset =
+        usize::try_from(read_u64_at(&bytes, VOCAB_OFFSETS_OFFSET_OFFSET)).expect("offset fits");
+    assert!(HEADER_SIZE < vocab_offsets_offset);
+
+    bytes[HEADER_SIZE] = 1;
+
     fs::write(&file_path, bytes)
         .await
         .expect("write should succeed");
@@ -256,7 +292,7 @@ fn sample_chain() -> MarkovChain {
     chain
 }
 
-async fn write_sample_file(prefix: &str, chain: &MarkovChain) -> std::path::PathBuf {
+async fn write_sample_file(prefix: &str, chain: &MarkovChain) -> TempPath {
     let file_path = temp_file_path(prefix);
     save_chain(&file_path, chain)
         .await
@@ -288,11 +324,11 @@ fn read_u64_at(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(raw)
 }
 
-fn temp_file_path(prefix: &str) -> std::path::PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time should be monotonic")
-        .as_nanos();
-
-    std::env::temp_dir().join(format!("markov_bot_{prefix}_{nanos}.mkv3"))
+fn temp_file_path(prefix: &str) -> TempPath {
+    Builder::new()
+        .prefix(&format!("markov_bot_{prefix}_"))
+        .suffix(".mkv3")
+        .tempfile()
+        .expect("tempfile should be created")
+        .into_temp_path()
 }
