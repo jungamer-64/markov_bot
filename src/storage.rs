@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io, path::Path};
+use std::{io, path::Path};
 
 use tokio::fs;
 
@@ -8,10 +8,16 @@ use crate::{
 };
 
 mod read;
+mod types;
 mod write;
 
 #[cfg(test)]
 mod tests;
+
+use types::{
+    CompiledStorage, EdgeRecord, Header, Model3Build, Pair3Record, ParsedStorage, Prefix1Record,
+    Prefix2Record, Prefix3Record, SectionCounts, SectionRanges, SectionSizes, StartRecord,
+};
 
 const MAGIC: [u8; 8] = *b"MKV3BIN\0";
 const VERSION: u32 = 1;
@@ -28,156 +34,6 @@ const PREFIX3_RECORD_SIZE: u64 = 16;
 const EDGE_RECORD_SIZE: u64 = 8;
 const PREFIX2_RECORD_SIZE: u64 = 20;
 const PREFIX1_RECORD_SIZE: u64 = 16;
-
-#[derive(Debug, Clone, Copy)]
-struct Header {
-    magic: [u8; 8],
-    version: u32,
-    flags: u32,
-    tokenizer_version: u32,
-    normalization_flags: u32,
-    token_count: u32,
-    start_count: u32,
-    model3_pair_count: u32,
-    model3_prefix_count: u32,
-    model3_edge_count: u32,
-    model2_prefix_count: u32,
-    model2_edge_count: u32,
-    model1_prefix_count: u32,
-    model1_edge_count: u32,
-    vocab_offsets_offset: u64,
-    vocab_blob_offset: u64,
-    start_offset: u64,
-    model3_pair_offset: u64,
-    model3_prefix_offset: u64,
-    model3_edge_offset: u64,
-    model2_prefix_offset: u64,
-    model2_edge_offset: u64,
-    model1_prefix_offset: u64,
-    model1_edge_offset: u64,
-    file_size: u64,
-    checksum: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct StartRecord {
-    prefix_id: u32,
-    cumulative: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Pair3Record {
-    w1: u32,
-    w2: u32,
-    prefix_start: u32,
-    prefix_len: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Prefix3Record {
-    w3: u32,
-    edge_start: u32,
-    edge_len: u32,
-    total: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Prefix2Record {
-    w1: u32,
-    w2: u32,
-    edge_start: u32,
-    edge_len: u32,
-    total: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Prefix1Record {
-    w1: u32,
-    edge_start: u32,
-    edge_len: u32,
-    total: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct EdgeRecord {
-    next: u32,
-    cumulative: u32,
-}
-
-#[derive(Debug)]
-struct CompiledStorage {
-    vocab_offsets: Vec<u64>,
-    vocab_blob: Vec<u8>,
-    starts: Vec<StartRecord>,
-    model3_pairs: Vec<Pair3Record>,
-    model3_prefixes: Vec<Prefix3Record>,
-    model3_edges: Vec<EdgeRecord>,
-    model2_prefixes: Vec<Prefix2Record>,
-    model2_edges: Vec<EdgeRecord>,
-    model1_prefixes: Vec<Prefix1Record>,
-    model1_edges: Vec<EdgeRecord>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SectionCounts {
-    token: u32,
-    start: u32,
-    model3_pair: u32,
-    model3_prefix: u32,
-    model3_edge: u32,
-    model2_prefix: u32,
-    model2_edge: u32,
-    model1_prefix: u32,
-    model1_edge: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SectionSizes {
-    vocab_offsets: u64,
-    vocab_blob: u64,
-    starts: u64,
-    model3_pairs: u64,
-    model3_prefixes: u64,
-    model3_edges: u64,
-    model2_prefixes: u64,
-    model2_edges: u64,
-    model1_prefixes: u64,
-    model1_edges: u64,
-}
-
-#[derive(Debug, Clone)]
-struct SectionRanges {
-    vocab_offsets: std::ops::Range<usize>,
-    vocab_blob_area: std::ops::Range<usize>,
-    starts: std::ops::Range<usize>,
-    model3_pairs: std::ops::Range<usize>,
-    model3_prefixes: std::ops::Range<usize>,
-    model3_edges: std::ops::Range<usize>,
-    model2_prefixes: std::ops::Range<usize>,
-    model2_edges: std::ops::Range<usize>,
-    model1_prefixes: std::ops::Range<usize>,
-    model1_edges: std::ops::Range<usize>,
-}
-
-#[derive(Debug)]
-struct ParsedStorage {
-    id_to_token: Vec<String>,
-    starts: Vec<StartRecord>,
-    model3_pairs: Vec<Pair3Record>,
-    model3_prefixes: Vec<Prefix3Record>,
-    model3_edges: Vec<EdgeRecord>,
-    model2_prefixes: Vec<Prefix2Record>,
-    model2_edges: Vec<EdgeRecord>,
-    model1_prefixes: Vec<Prefix1Record>,
-    model1_edges: Vec<EdgeRecord>,
-}
-
-type Model3Build = (
-    Vec<Pair3Record>,
-    Vec<Prefix3Record>,
-    Vec<EdgeRecord>,
-    HashMap<[TokenId; 3], u32>,
-);
 
 pub async fn load_chain(path: &Path) -> Result<MarkovChain, DynError> {
     let bytes = match fs::read(path).await {
