@@ -2,12 +2,13 @@ use super::super::super::{CompiledStorage, DynError, HEADER_SIZE, Header, usize_
 
 pub(super) fn write_sections(
     compiled: &CompiledStorage,
+    encoded_vocab_blob: &[u8],
     header: Header,
 ) -> Result<Vec<u8>, DynError> {
     let mut bytes = vec![0; HEADER_SIZE];
 
     write_vocab_offsets(&mut bytes, compiled, header)?;
-    write_vocab_blob(&mut bytes, compiled, header)?;
+    write_vocab_blob(&mut bytes, encoded_vocab_blob, header)?;
     write_starts(&mut bytes, compiled, header)?;
     write_model3_pairs(&mut bytes, compiled, header)?;
     write_model3_prefixes(&mut bytes, compiled, header)?;
@@ -44,11 +45,11 @@ fn write_vocab_offsets(
 
 fn write_vocab_blob(
     bytes: &mut Vec<u8>,
-    compiled: &CompiledStorage,
+    encoded_vocab_blob: &[u8],
     header: Header,
 ) -> Result<(), DynError> {
     write_at_offset(bytes, header.vocab_blob_offset, |target| {
-        target.extend_from_slice(compiled.vocab_blob.as_slice());
+        target.extend_from_slice(encoded_vocab_blob);
     })
 }
 

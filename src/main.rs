@@ -40,12 +40,13 @@ async fn main() -> Result<(), DynError> {
     let mut shard = Shard::new(ShardId::ONE, config.discord_token, intents);
 
     println!(
-        "Bot started. target_channel_id=unset(use /set_channel), cooldown={}s, generation<= {} words, temp={}, min_words_before_eos={}, storage_min_edge_count={}",
+        "Bot started. target_channel_id=unset(use /set_channel), cooldown={}s, generation<= {} words, temp={}, min_words_before_eos={}, storage_min_edge_count={}, storage_compression={}",
         config.reply_cooldown_secs,
         config.max_words,
         config.generation_temperature,
         config.min_words_before_eos,
         config.storage_min_edge_count,
+        config.storage_compression.as_env_value(),
     );
 
     while let Some(item) = shard.next_event(EventTypeFlags::all()).await {

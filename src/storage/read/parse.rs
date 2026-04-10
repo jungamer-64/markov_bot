@@ -1,8 +1,9 @@
 use super::super::{
-    DynError, Header, ParsedStorage, SectionRanges, u64_from_usize, usize_from_u32, usize_from_u64,
+    DynError, Header, ParsedStorage, SectionRanges, usize_from_u32, usize_from_u64,
     validate_special_tokens,
 };
 
+mod compression;
 mod records;
 mod vocab;
 
@@ -27,21 +28,13 @@ pub(super) fn parse_storage(
     vocab::validate_vocab_offsets(vocab_offsets.as_slice())?;
 
     let vocab_blob_size = *vocab_offsets.last().ok_or("vocab offsets are empty")?;
-    let vocab_blob_area_size = u64_from_usize(ranges.vocab_blob_area.len(), "vocab blob area")?;
-    if vocab_blob_size > vocab_blob_area_size {
-        return Err("vocab blob size exceeds allocated section".into());
-    }
+    let vocab_blob = compression::decode_vocab_blob(
+        bytes[ranges.vocab_blob.clone()].as_ref(),
+        usize_from_u64(vocab_blob_size, "vocab blob size")?,
+        header.flags,
+    )?;
 
-    let vocab_blob_end = ranges
-        .vocab_blob_area
-        .start
-        .checked_add(usize_from_u64(vocab_blob_size, "vocab blob size")?)
-        .ok_or("vocab blob range overflow")?;
-    let vocab_blob = bytes
-        .get(ranges.vocab_blob_area.start..vocab_blob_end)
-        .ok_or("vocab blob range is invalid")?;
-
-    let id_to_token = vocab::decode_vocab(vocab_offsets.as_slice(), vocab_blob)?;
+    let id_to_token = vocab::decode_vocab(vocab_offsets.as_slice(), vocab_blob.as_slice())?;
     validate_special_tokens(id_to_token.as_slice())?;
 
     Ok(ParsedStorage {

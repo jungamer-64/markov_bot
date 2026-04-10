@@ -21,6 +21,7 @@ pub(super) struct Header {
     pub(super) model1_edge_count: u32,
     pub(super) vocab_offsets_offset: u64,
     pub(super) vocab_blob_offset: u64,
+    pub(super) vocab_blob_stored_size: u64,
     pub(super) start_offset: u64,
     pub(super) model3_pair_offset: u64,
     pub(super) model3_prefix_offset: u64,
@@ -133,7 +134,7 @@ pub(super) struct SectionSizes {
 #[derive(Debug, Clone)]
 pub(super) struct SectionRanges {
     pub(super) vocab_offsets: std::ops::Range<usize>,
-    pub(super) vocab_blob_area: std::ops::Range<usize>,
+    pub(super) vocab_blob: std::ops::Range<usize>,
     pub(super) starts: std::ops::Range<usize>,
     pub(super) model3_pairs: std::ops::Range<usize>,
     pub(super) model3_prefixes: std::ops::Range<usize>,

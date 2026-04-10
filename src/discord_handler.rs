@@ -89,6 +89,7 @@ impl DiscordHandler {
                 &self.config.data_path,
                 &snapshot,
                 self.config.storage_min_edge_count,
+                self.config.storage_compression,
             )
             .await?;
         }

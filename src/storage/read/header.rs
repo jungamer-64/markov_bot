@@ -1,9 +1,8 @@
 use super::super::{
-    DynError, EDGE_RECORD_SIZE, FLAGS, HEADER_SIZE, Header, MAGIC, NORMALIZATION_FLAGS,
-    PAIR2_RECORD_SIZE, PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE, PREFIX2_RECORD_SIZE,
-    PREFIX3_RECORD_SIZE, START_RECORD_SIZE, SectionRanges, TOKENIZER_VERSION, VERSION,
-    align_to_eight, bytes_for_len, checked_add, compute_checksum, u64_from_usize, usize_from_u32,
-    usize_from_u64,
+    DynError, EDGE_RECORD_SIZE, HEADER_SIZE, Header, MAGIC, NORMALIZATION_FLAGS, PAIR2_RECORD_SIZE,
+    PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE, PREFIX2_RECORD_SIZE, PREFIX3_RECORD_SIZE,
+    START_RECORD_SIZE, SUPPORTED_FLAGS, SectionRanges, TOKENIZER_VERSION, VERSION, align_to_eight,
+    bytes_for_len, checked_add, compute_checksum, u64_from_usize, usize_from_u32, usize_from_u64,
 };
 use super::{read_exact, read_u32_value, read_u64_value};
 
@@ -28,7 +27,7 @@ pub(super) fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {
     if header.version != VERSION {
         return Err(format!("unsupported version: {}", header.version).into());
     }
-    if header.flags != FLAGS {
+    if header.flags & !SUPPORTED_FLAGS != 0 {
         return Err(format!("unsupported flags: {}", header.flags).into());
     }
     if header.tokenizer_version != TOKENIZER_VERSION {
@@ -113,20 +112,16 @@ pub(super) fn build_section_ranges(
 
     let model_ranges = build_model_ranges(header)?;
 
-    let vocab_blob_area_size = header
-        .start_offset
-        .checked_sub(header.vocab_blob_offset)
-        .ok_or("vocab blob offset exceeds start offset")?;
-    let vocab_blob_area = section_range(
+    let vocab_blob = section_range(
         header.vocab_blob_offset,
-        vocab_blob_area_size,
+        header.vocab_blob_stored_size,
         header.file_size,
-        "vocab blob area",
+        "vocab blob",
     )?;
 
     let ranges = SectionRanges {
         vocab_offsets,
-        vocab_blob_area,
+        vocab_blob,
         starts: model_ranges.starts,
         model3_pairs: model_ranges.model3_pairs,
         model3_prefixes: model_ranges.model3_prefixes,
@@ -258,11 +253,11 @@ fn validate_non_overlapping_sections(ranges: &SectionRanges) -> Result<(), DynEr
             "vocab offsets",
             &ranges.vocab_offsets,
             "vocab blob",
-            ranges.vocab_blob_area.start,
+            ranges.vocab_blob.start,
         ),
         (
             "vocab blob",
-            &ranges.vocab_blob_area,
+            &ranges.vocab_blob,
             "start records",
             ranges.starts.start,
         ),
@@ -332,14 +327,10 @@ fn validate_padding_regions(
         (aligned_header_end, ranges.vocab_offsets.start, "header"),
         (
             ranges.vocab_offsets.end,
-            ranges.vocab_blob_area.start,
+            ranges.vocab_blob.start,
             "vocab offsets",
         ),
-        (
-            ranges.vocab_blob_area.end,
-            ranges.starts.start,
-            "vocab blob",
-        ),
+        (ranges.vocab_blob.end, ranges.starts.start, "vocab blob"),
         (
             ranges.starts.end,
             ranges.model3_pairs.start,
@@ -498,6 +489,7 @@ fn decode_header(bytes: &[u8]) -> Result<Header, DynError> {
     let model1_edge_count = read_u32_value(bytes, &mut cursor)?;
     let vocab_offsets_offset = read_u64_value(bytes, &mut cursor)?;
     let vocab_blob_offset = read_u64_value(bytes, &mut cursor)?;
+    let vocab_blob_stored_size = read_u64_value(bytes, &mut cursor)?;
     let start_offset = read_u64_value(bytes, &mut cursor)?;
     let model3_pair_offset = read_u64_value(bytes, &mut cursor)?;
     let model3_prefix_offset = read_u64_value(bytes, &mut cursor)?;
@@ -528,6 +520,7 @@ fn decode_header(bytes: &[u8]) -> Result<Header, DynError> {
         model1_edge_count,
         vocab_offsets_offset,
         vocab_blob_offset,
+        vocab_blob_stored_size,
         start_offset,
         model3_pair_offset,
         model3_prefix_offset,

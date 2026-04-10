@@ -1,5 +1,7 @@
 use std::{env, error::Error, path::PathBuf};
 
+use crate::storage::StorageCompressionMode;
+
 pub type DynError = Box<dyn Error + Send + Sync>;
 
 #[derive(Clone, Debug)]
@@ -7,6 +9,7 @@ pub struct BotConfig {
     pub discord_token: String,
     pub data_path: PathBuf,
     pub storage_min_edge_count: u64,
+    pub storage_compression: StorageCompressionMode,
     pub max_words: usize,
     pub generation_temperature: f64,
     pub min_words_before_eos: usize,
@@ -26,6 +29,12 @@ impl BotConfig {
         if storage_min_edge_count == 0 {
             return Err("STORAGE_MIN_EDGE_COUNT must be >= 1".into());
         }
+
+        let storage_compression = match env::var("STORAGE_COMPRESSION") {
+            Ok(raw) => StorageCompressionMode::parse(raw.as_str())?,
+            Err(env::VarError::NotPresent) => StorageCompressionMode::Auto,
+            Err(error) => return Err(error.into()),
+        };
 
         let max_words = env_parse_or_default("REPLY_MAX_WORDS", 20_usize)?;
         if max_words == 0 {
@@ -48,6 +57,7 @@ impl BotConfig {
             discord_token,
             data_path,
             storage_min_edge_count,
+            storage_compression,
             max_words,
             generation_temperature,
             min_words_before_eos,

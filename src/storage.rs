@@ -21,13 +21,15 @@ use types::{
 };
 
 const MAGIC: [u8; 8] = *b"MKV3BIN\0";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 const FLAGS: u32 = 0;
+const FLAG_VOCAB_BLOB_RLE: u32 = 1 << 0;
+const SUPPORTED_FLAGS: u32 = FLAG_VOCAB_BLOB_RLE;
 const TOKENIZER_VERSION: u32 = 1;
 const NORMALIZATION_FLAGS: u32 = 0;
 const CHECKSUM_PLACEHOLDER: u64 = 0;
 
-const HEADER_SIZE: usize = 168;
+const HEADER_SIZE: usize = 176;
 const CHECKSUM_SIZE: usize = std::mem::size_of::<u64>();
 const CHECKSUM_OFFSET: usize = HEADER_SIZE - CHECKSUM_SIZE;
 
@@ -41,6 +43,35 @@ const PREFIX3_RECORD_SIZE: u64 = 20;
 const EDGE_RECORD_SIZE: u64 = 12;
 const PREFIX2_RECORD_SIZE: u64 = 24;
 const PREFIX1_RECORD_SIZE: u64 = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageCompressionMode {
+    Auto,
+    Uncompressed,
+    VocabBlobRle,
+}
+
+impl StorageCompressionMode {
+    pub fn parse(raw: &str) -> Result<Self, DynError> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "none" | "off" | "uncompressed" => Ok(Self::Uncompressed),
+            "rle" | "vocab_rle" | "vocab-blob-rle" => Ok(Self::VocabBlobRle),
+            _ => Err(format!(
+                "unsupported STORAGE_COMPRESSION value: {raw} (expected: auto|none|rle)"
+            )
+            .into()),
+        }
+    }
+
+    pub const fn as_env_value(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Uncompressed => "none",
+            Self::VocabBlobRle => "rle",
+        }
+    }
+}
 
 pub async fn load_chain(path: &Path) -> Result<MarkovChain, DynError> {
     let bytes = match fs::read(path).await {
@@ -56,13 +87,14 @@ pub async fn save_chain(
     path: &Path,
     chain: &MarkovChain,
     min_edge_count: Count,
+    compression_mode: StorageCompressionMode,
 ) -> Result<(), DynError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
 
     let compiled = write::compile_chain(chain, min_edge_count)?;
-    let payload = write::encode_storage(&compiled)?;
+    let payload = write::encode_storage(&compiled, compression_mode)?;
 
     read::decode_chain(payload.as_slice())?;
 

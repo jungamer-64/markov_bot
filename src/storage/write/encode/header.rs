@@ -1,14 +1,18 @@
 use super::super::super::{
-    CHECKSUM_PLACEHOLDER, CompiledStorage, DynError, FLAGS, HEADER_SIZE, Header, MAGIC,
+    CHECKSUM_PLACEHOLDER, CompiledStorage, DynError, HEADER_SIZE, Header, MAGIC,
     NORMALIZATION_FLAGS, PAIR2_RECORD_SIZE, PAIR3_RECORD_SIZE, PREFIX1_RECORD_SIZE,
     PREFIX2_RECORD_SIZE, PREFIX3_RECORD_SIZE, START_RECORD_SIZE, SectionCounts, SectionSizes,
     TOKENIZER_VERSION, VERSION, align_to_eight, bytes_for_len, checked_add, u32_from_usize,
     u64_from_usize,
 };
 
-pub(super) fn build_header(compiled: &CompiledStorage) -> Result<Header, DynError> {
+pub(super) fn build_header(
+    compiled: &CompiledStorage,
+    vocab_blob_stored_size: usize,
+    flags: u32,
+) -> Result<Header, DynError> {
     let counts = section_counts(compiled)?;
-    let sizes = section_sizes(compiled)?;
+    let sizes = section_sizes(compiled, vocab_blob_stored_size)?;
 
     let mut offset = align_to_eight(u64_from_usize(HEADER_SIZE, "header size")?);
 
@@ -47,7 +51,7 @@ pub(super) fn build_header(compiled: &CompiledStorage) -> Result<Header, DynErro
     Ok(Header {
         magic: MAGIC,
         version: VERSION,
-        flags: FLAGS,
+        flags,
         tokenizer_version: TOKENIZER_VERSION,
         normalization_flags: NORMALIZATION_FLAGS,
         token_count: counts.token,
@@ -62,6 +66,7 @@ pub(super) fn build_header(compiled: &CompiledStorage) -> Result<Header, DynErro
         model1_edge_count: counts.model1_edge,
         vocab_offsets_offset,
         vocab_blob_offset,
+        vocab_blob_stored_size: sizes.vocab_blob,
         start_offset,
         model3_pair_offset,
         model3_prefix_offset,
@@ -96,6 +101,7 @@ pub(super) fn encode_header(header: Header) -> Vec<u8> {
     write_u32(&mut bytes, header.model1_edge_count);
     write_u64(&mut bytes, header.vocab_offsets_offset);
     write_u64(&mut bytes, header.vocab_blob_offset);
+    write_u64(&mut bytes, header.vocab_blob_stored_size);
     write_u64(&mut bytes, header.start_offset);
     write_u64(&mut bytes, header.model3_pair_offset);
     write_u64(&mut bytes, header.model3_prefix_offset);
@@ -133,10 +139,13 @@ fn section_counts(compiled: &CompiledStorage) -> Result<SectionCounts, DynError>
     })
 }
 
-fn section_sizes(compiled: &CompiledStorage) -> Result<SectionSizes, DynError> {
+fn section_sizes(
+    compiled: &CompiledStorage,
+    vocab_blob_stored_size: usize,
+) -> Result<SectionSizes, DynError> {
     Ok(SectionSizes {
         vocab_offsets: bytes_for_len(compiled.vocab_offsets.len(), 8, "vocab offsets")?,
-        vocab_blob: u64_from_usize(compiled.vocab_blob.len(), "vocab blob")?,
+        vocab_blob: u64_from_usize(vocab_blob_stored_size, "vocab blob")?,
         starts: bytes_for_len(compiled.starts.len(), START_RECORD_SIZE, "start records")?,
         model3_pairs: bytes_for_len(
             compiled.model3_pairs.len(),
