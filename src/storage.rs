@@ -58,6 +58,8 @@ pub async fn save_chain(path: &Path, chain: &MarkovChain) -> Result<(), DynError
     let compiled = write::compile_chain(chain)?;
     let payload = write::encode_storage(&compiled)?;
 
+    read::decode_chain(payload.as_slice())?;
+
     fs::write(path, payload).await?;
 
     Ok(())

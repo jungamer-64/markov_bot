@@ -188,14 +188,34 @@ fn validate_section_layout(
     header: &Header,
     ranges: &SectionRanges,
 ) -> Result<(), DynError> {
-    let aligned_header_end = align_to_eight(u64_from_usize(HEADER_SIZE, "header size")?);
-    let aligned_header_end = usize_from_u64(aligned_header_end, "aligned header size")?;
+    let aligned_header_end = aligned_header_end()?;
 
+    ensure_vocab_offsets_after_header(ranges, aligned_header_end)?;
+    validate_non_overlapping_sections(ranges)?;
+    validate_padding_regions(bytes, ranges, aligned_header_end)?;
+    validate_final_section_ends_at_file_size(header, ranges)?;
+
+    Ok(())
+}
+
+fn aligned_header_end() -> Result<usize, DynError> {
+    let aligned = align_to_eight(u64_from_usize(HEADER_SIZE, "header size")?);
+    usize_from_u64(aligned, "aligned header size")
+}
+
+fn ensure_vocab_offsets_after_header(
+    ranges: &SectionRanges,
+    aligned_header_end: usize,
+) -> Result<(), DynError> {
     if ranges.vocab_offsets.start < aligned_header_end {
         return Err("vocab offsets section starts before aligned header end".into());
     }
 
-    let non_overlap_checks = [
+    Ok(())
+}
+
+fn validate_non_overlapping_sections(ranges: &SectionRanges) -> Result<(), DynError> {
+    let checks = [
         (
             "vocab offsets",
             &ranges.vocab_offsets,
@@ -251,11 +271,20 @@ fn validate_section_layout(
             ranges.model1_edges.start,
         ),
     ];
-    for (left_name, left_range, right_name, right_start) in non_overlap_checks {
+
+    for (left_name, left_range, right_name, right_start) in checks {
         ensure_non_overlapping(left_name, left_range, right_name, right_start)?;
     }
 
-    let padding_checks = [
+    Ok(())
+}
+
+fn validate_padding_regions(
+    bytes: &[u8],
+    ranges: &SectionRanges,
+    aligned_header_end: usize,
+) -> Result<(), DynError> {
+    let checks = [
         (aligned_header_end, ranges.vocab_offsets.start, "header"),
         (
             ranges.vocab_offsets.end,
@@ -303,10 +332,18 @@ fn validate_section_layout(
             "model1 prefixes",
         ),
     ];
-    for (start, end, context) in padding_checks {
+
+    for (start, end, context) in checks {
         validate_zero_padding(bytes, start, end, context)?;
     }
 
+    Ok(())
+}
+
+fn validate_final_section_ends_at_file_size(
+    header: &Header,
+    ranges: &SectionRanges,
+) -> Result<(), DynError> {
     let file_size = usize_from_u64(header.file_size, "file_size")?;
     if ranges.model1_edges.end != file_size {
         return Err("model1 edges section must end at file_size".into());
