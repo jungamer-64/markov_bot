@@ -1082,8 +1082,6 @@ dependencies = [
  "lindera",
  "rand 0.10.0",
  "rustls",
- "serde",
- "serde_json",
  "tokio",
  "twilight-gateway",
  "twilight-http",

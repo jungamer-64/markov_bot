@@ -85,8 +85,8 @@ impl DiscordHandler {
         {
             let mut state = self.state.lock().await;
 
-            if tokens.len() >= 3 {
-                state.chain.train_tokens(&tokens);
+            if !tokens.is_empty() {
+                state.chain.train_tokens(&tokens)?;
                 should_persist = true;
             }
 
@@ -96,7 +96,9 @@ impl DiscordHandler {
 
             if can_reply {
                 let mut rng = rng();
-                let generated = state.chain.generate_sentence(&mut rng, self.config.max_words);
+                let generated = state
+                    .chain
+                    .generate_sentence(&mut rng, self.config.max_words);
 
                 reply_text = Some(generated.unwrap_or_else(|| GENERATION_FALLBACK.to_owned()));
                 state.last_reply_at = Some(Instant::now());

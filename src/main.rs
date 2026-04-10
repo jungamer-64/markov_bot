@@ -13,9 +13,7 @@ use twilight_http::Client as HttpClient;
 use twilight_model::{
     application::{
         command::{CommandOption, CommandOptionType},
-        interaction::{
-            InteractionData, InteractionType, application_command::CommandOptionValue,
-        },
+        interaction::{InteractionData, InteractionType, application_command::CommandOptionValue},
     },
     channel::{ChannelType, message::MessageFlags},
     guild::Permissions,
@@ -149,13 +147,14 @@ async fn handle_interaction_command(
         return Ok(());
     }
 
-    let response_message = if let Some(channel_id) = extract_channel_option(command_data.options.as_slice()) {
-        handler.set_target_channel(channel_id).await;
+    let response_message =
+        if let Some(channel_id) = extract_channel_option(command_data.options.as_slice()) {
+            handler.set_target_channel(channel_id).await;
 
-        format!("対象チャンネルを <#{channel_id}> に設定しました。")
-    } else {
-        "チャンネル指定を解釈できませんでした。もう一度実行してください。".to_owned()
-    };
+            format!("対象チャンネルを <#{channel_id}> に設定しました。")
+        } else {
+            "チャンネル指定を解釈できませんでした。もう一度実行してください。".to_owned()
+        };
 
     let response = InteractionResponse {
         kind: InteractionResponseType::ChannelMessageWithSource,
@@ -174,7 +173,9 @@ async fn handle_interaction_command(
     Ok(())
 }
 
-fn extract_channel_option(options: &[twilight_model::application::interaction::application_command::CommandDataOption]) -> Option<Id<ChannelMarker>> {
+fn extract_channel_option(
+    options: &[twilight_model::application::interaction::application_command::CommandDataOption],
+) -> Option<Id<ChannelMarker>> {
     options.iter().find_map(|option| {
         if option.name != "channel" {
             return None;

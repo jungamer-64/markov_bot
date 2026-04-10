@@ -17,7 +17,7 @@ impl BotConfig {
         let discord_token = required_env("DISCORD_TOKEN")?;
 
         let data_path = env::var("MARKOV_DATA_PATH")
-            .map_or_else(|_| PathBuf::from("data/markov_chain.json"), PathBuf::from);
+            .map_or_else(|_| PathBuf::from("data/markov_chain.mkv3"), PathBuf::from);
 
         let max_words = env_parse_or_default("REPLY_MAX_WORDS", 20_usize)?;
         if max_words == 0 {

@@ -1,7 +1,5 @@
 use lindera::{
-    dictionary::load_dictionary,
-    mode::Mode,
-    segmenter::Segmenter,
+    dictionary::load_dictionary, mode::Mode, segmenter::Segmenter,
     tokenizer::Tokenizer as LinderaTokenizer,
 };
 use unicode_segmentation::UnicodeSegmentation;
