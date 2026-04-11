@@ -1,25 +1,65 @@
-use super::super::super::{CompiledStorage, DynError, HEADER_SIZE, Header, usize_from_u64};
+use super::super::super::{
+    DynError, FixedRecord, SectionDescriptor, SectionKind, StorageSections, aligned_metadata_end,
+    fixed_section_bytes, usize_from_u64,
+};
 
-pub(super) fn write_sections(
-    compiled: &CompiledStorage,
+pub(super) struct SectionPayload {
+    pub(super) kind: SectionKind,
+    pub(super) bytes: Vec<u8>,
+}
+
+pub(super) fn build_section_payloads(
+    sections: &StorageSections,
     encoded_vocab_blob: &[u8],
-    header: Header,
+) -> Result<Vec<SectionPayload>, DynError> {
+    Ok(vec![
+        build_u64_payload(SectionKind::VocabOffsets, sections.vocab.offsets.as_slice())?,
+        SectionPayload {
+            kind: SectionKind::VocabBlob,
+            bytes: encoded_vocab_blob.to_vec(),
+        },
+        build_fixed_payload(SectionKind::Starts, sections.starts.as_slice())?,
+        build_fixed_payload(SectionKind::Model3Pairs, sections.model3.pairs.as_slice())?,
+        build_fixed_payload(
+            SectionKind::Model3Prefixes,
+            sections.model3.prefixes.as_slice(),
+        )?,
+        build_fixed_payload(SectionKind::Model3Edges, sections.model3.edges.as_slice())?,
+        build_fixed_payload(SectionKind::Model2Pairs, sections.model2.pairs.as_slice())?,
+        build_fixed_payload(
+            SectionKind::Model2Prefixes,
+            sections.model2.prefixes.as_slice(),
+        )?,
+        build_fixed_payload(SectionKind::Model2Edges, sections.model2.edges.as_slice())?,
+        build_fixed_payload(
+            SectionKind::Model1Prefixes,
+            sections.model1.prefixes.as_slice(),
+        )?,
+        build_fixed_payload(SectionKind::Model1Edges, sections.model1.edges.as_slice())?,
+    ])
+}
+
+pub(super) fn write_section_payloads(
+    payloads: &[SectionPayload],
+    descriptors: &[SectionDescriptor],
+    file_size: u64,
 ) -> Result<Vec<u8>, DynError> {
-    let mut bytes = vec![0; HEADER_SIZE];
+    if payloads.len() != descriptors.len() {
+        return Err("section payload count does not match descriptor count".into());
+    }
 
-    write_vocab_offsets(&mut bytes, compiled, header)?;
-    write_vocab_blob(&mut bytes, encoded_vocab_blob, header)?;
-    write_starts(&mut bytes, compiled, header)?;
-    write_model3_pairs(&mut bytes, compiled, header)?;
-    write_model3_prefixes(&mut bytes, compiled, header)?;
-    write_model3_edges(&mut bytes, compiled, header)?;
-    write_model2_pairs(&mut bytes, compiled, header)?;
-    write_model2_prefixes(&mut bytes, compiled, header)?;
-    write_model2_edges(&mut bytes, compiled, header)?;
-    write_model1_prefixes(&mut bytes, compiled, header)?;
-    write_model1_edges(&mut bytes, compiled, header)?;
+    let metadata_end = usize_from_u64(aligned_metadata_end(descriptors.len())?, "metadata size")?;
+    let mut bytes = vec![0; metadata_end];
 
-    let expected_file_size = usize_from_u64(header.file_size, "file size")?;
+    for (payload, descriptor) in payloads.iter().zip(descriptors.iter()) {
+        if descriptor.kind != payload.kind.as_u32() {
+            return Err("section descriptor order does not match payload order".into());
+        }
+
+        write_at_offset(&mut bytes, descriptor.offset, payload.bytes.as_slice())?;
+    }
+
+    let expected_file_size = usize_from_u64(file_size, "file size")?;
     if bytes.len() != expected_file_size {
         return Err(format!(
             "serialized size mismatch: expected {expected_file_size}, got {}",
@@ -31,170 +71,36 @@ pub(super) fn write_sections(
     Ok(bytes)
 }
 
-fn write_vocab_offsets(
-    bytes: &mut Vec<u8>,
-    compiled: &CompiledStorage,
-    header: Header,
-) -> Result<(), DynError> {
-    write_at_offset(bytes, header.vocab_offsets_offset, |target| {
-        for offset in &compiled.vocab_offsets {
-            write_u64(target, *offset);
-        }
-    })
+fn build_fixed_payload<T: FixedRecord>(
+    kind: SectionKind,
+    records: &[T],
+) -> Result<SectionPayload, DynError> {
+    let capacity = usize_from_u64(fixed_section_bytes(records, kind.label())?, kind.label())?;
+    let mut bytes = Vec::with_capacity(capacity);
+    for record in records {
+        record.encode_into(&mut bytes);
+    }
+
+    Ok(SectionPayload { kind, bytes })
 }
 
-fn write_vocab_blob(
-    bytes: &mut Vec<u8>,
-    encoded_vocab_blob: &[u8],
-    header: Header,
-) -> Result<(), DynError> {
-    write_at_offset(bytes, header.vocab_blob_offset, |target| {
-        target.extend_from_slice(encoded_vocab_blob);
-    })
+fn build_u64_payload(kind: SectionKind, values: &[u64]) -> Result<SectionPayload, DynError> {
+    let capacity = usize_from_u64(
+        super::super::super::bytes_for_len(values.len(), 8, kind.label())?,
+        kind.label(),
+    )?;
+    let mut bytes = Vec::with_capacity(capacity);
+    for value in values {
+        bytes.extend_from_slice(value.to_le_bytes().as_slice());
+    }
+
+    Ok(SectionPayload { kind, bytes })
 }
 
-fn write_starts(
-    bytes: &mut Vec<u8>,
-    compiled: &CompiledStorage,
-    header: Header,
-) -> Result<(), DynError> {
-    write_at_offset(bytes, header.start_offset, |target| {
-        for record in &compiled.starts {
-            write_u32(target, record.prefix_id);
-            write_u64(target, record.cumulative);
-        }
-    })
-}
-
-fn write_model3_pairs(
-    bytes: &mut Vec<u8>,
-    compiled: &CompiledStorage,
-    header: Header,
-) -> Result<(), DynError> {
-    write_at_offset(bytes, header.model3_pair_offset, |target| {
-        for record in &compiled.model3_pairs {
-            write_u32(target, record.w1);
-            write_u32(target, record.w2);
-            write_u32(target, record.prefix_start);
-            write_u32(target, record.prefix_len);
-        }
-    })
-}
-
-fn write_model3_prefixes(
-    bytes: &mut Vec<u8>,
-    compiled: &CompiledStorage,
-    header: Header,
-) -> Result<(), DynError> {
-    write_at_offset(bytes, header.model3_prefix_offset, |target| {
-        for record in &compiled.model3_prefixes {
-            write_u32(target, record.w3);
-            write_u32(target, record.edge_start);
-            write_u32(target, record.edge_len);
-            write_u64(target, record.total);
-        }
-    })
-}
-
-fn write_model3_edges(
-    bytes: &mut Vec<u8>,
-    compiled: &CompiledStorage,
-    header: Header,
-) -> Result<(), DynError> {
-    write_at_offset(bytes, header.model3_edge_offset, |target| {
-        for record in &compiled.model3_edges {
-            write_u32(target, record.next);
-            write_u64(target, record.cumulative);
-        }
-    })
-}
-
-fn write_model2_prefixes(
-    bytes: &mut Vec<u8>,
-    compiled: &CompiledStorage,
-    header: Header,
-) -> Result<(), DynError> {
-    write_at_offset(bytes, header.model2_prefix_offset, |target| {
-        for record in &compiled.model2_prefixes {
-            write_u32(target, record.w1);
-            write_u32(target, record.w2);
-            write_u32(target, record.edge_start);
-            write_u32(target, record.edge_len);
-            write_u64(target, record.total);
-        }
-    })
-}
-
-fn write_model2_pairs(
-    bytes: &mut Vec<u8>,
-    compiled: &CompiledStorage,
-    header: Header,
-) -> Result<(), DynError> {
-    write_at_offset(bytes, header.model2_pair_offset, |target| {
-        for record in &compiled.model2_pairs {
-            write_u32(target, record.w1);
-            write_u32(target, record.prefix_start);
-            write_u32(target, record.prefix_len);
-        }
-    })
-}
-
-fn write_model2_edges(
-    bytes: &mut Vec<u8>,
-    compiled: &CompiledStorage,
-    header: Header,
-) -> Result<(), DynError> {
-    write_at_offset(bytes, header.model2_edge_offset, |target| {
-        for record in &compiled.model2_edges {
-            write_u32(target, record.next);
-            write_u64(target, record.cumulative);
-        }
-    })
-}
-
-fn write_model1_prefixes(
-    bytes: &mut Vec<u8>,
-    compiled: &CompiledStorage,
-    header: Header,
-) -> Result<(), DynError> {
-    write_at_offset(bytes, header.model1_prefix_offset, |target| {
-        for record in &compiled.model1_prefixes {
-            write_u32(target, record.w1);
-            write_u32(target, record.edge_start);
-            write_u32(target, record.edge_len);
-            write_u64(target, record.total);
-        }
-    })
-}
-
-fn write_model1_edges(
-    bytes: &mut Vec<u8>,
-    compiled: &CompiledStorage,
-    header: Header,
-) -> Result<(), DynError> {
-    write_at_offset(bytes, header.model1_edge_offset, |target| {
-        for record in &compiled.model1_edges {
-            write_u32(target, record.next);
-            write_u64(target, record.cumulative);
-        }
-    })
-}
-
-fn write_at_offset<F>(target: &mut Vec<u8>, offset: u64, writer: F) -> Result<(), DynError>
-where
-    F: FnOnce(&mut Vec<u8>),
-{
+fn write_at_offset(target: &mut Vec<u8>, offset: u64, bytes: &[u8]) -> Result<(), DynError> {
     pad_to_offset(target, offset)?;
-    writer(target);
+    target.extend_from_slice(bytes);
     Ok(())
-}
-
-fn write_u32(target: &mut Vec<u8>, value: u32) {
-    target.extend_from_slice(value.to_le_bytes().as_slice());
-}
-
-fn write_u64(target: &mut Vec<u8>, value: u64) {
-    target.extend_from_slice(value.to_le_bytes().as_slice());
 }
 
 fn pad_to_offset(target: &mut Vec<u8>, offset: u64) -> Result<(), DynError> {

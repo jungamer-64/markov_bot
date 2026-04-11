@@ -1,18 +1,18 @@
 use std::collections::HashMap;
 
 use super::super::super::{
-    Count, DynError, EdgeRecord, MarkovChain, Model3Build, Pair2Record, Pair3Record, Prefix1Record,
-    Prefix2Record, Prefix3Record, StartRecord, TokenId, u32_from_usize, validate_token_id,
+    Count, DynError, EdgeRecord, MarkovChain, Model1Sections, Model2Sections, Model3PrefixIndex,
+    Model3Sections, Pair2Record, Pair3Record, Prefix1Record, Prefix2Record, Prefix3Record,
+    StartRecord, TokenId, u32_from_usize, validate_token_id,
 };
 
 type Model3Entry<'a> = ([TokenId; 3], &'a HashMap<TokenId, Count>);
-type Model2Build = (Vec<Pair2Record>, Vec<Prefix2Record>, Vec<EdgeRecord>);
 
 pub(super) fn build_model3(
     chain: &MarkovChain,
     token_count: u32,
     min_edge_count: Count,
-) -> Result<Model3Build, DynError> {
+) -> Result<(Model3Sections, Model3PrefixIndex), DynError> {
     let mut entries = chain
         .model3
         .iter()
@@ -23,7 +23,7 @@ pub(super) fn build_model3(
     let mut pair_records = Vec::new();
     let mut prefix_records = Vec::new();
     let mut edge_records = Vec::new();
-    let mut prefix_to_id = HashMap::new();
+    let mut prefix_to_id = Model3PrefixIndex::new();
 
     for group in entries.chunk_by(|left, right| left.0[0] == right.0[0] && left.0[1] == right.0[1])
     {
@@ -49,14 +49,21 @@ pub(super) fn build_model3(
         });
     }
 
-    Ok((pair_records, prefix_records, edge_records, prefix_to_id))
+    Ok((
+        Model3Sections {
+            pairs: pair_records,
+            prefixes: prefix_records,
+            edges: edge_records,
+        },
+        prefix_to_id,
+    ))
 }
 
 pub(super) fn build_model2(
     chain: &MarkovChain,
     token_count: u32,
     min_edge_count: Count,
-) -> Result<Model2Build, DynError> {
+) -> Result<Model2Sections, DynError> {
     let mut entries = chain
         .model2
         .iter()
@@ -114,14 +121,18 @@ pub(super) fn build_model2(
         });
     }
 
-    Ok((pair_records, prefix_records, edge_records))
+    Ok(Model2Sections {
+        pairs: pair_records,
+        prefixes: prefix_records,
+        edges: edge_records,
+    })
 }
 
 pub(super) fn build_model1(
     chain: &MarkovChain,
     token_count: u32,
     min_edge_count: Count,
-) -> Result<(Vec<Prefix1Record>, Vec<EdgeRecord>), DynError> {
+) -> Result<Model1Sections, DynError> {
     let mut entries = chain
         .model1
         .iter()
@@ -155,12 +166,15 @@ pub(super) fn build_model1(
         });
     }
 
-    Ok((prefix_records, edge_records))
+    Ok(Model1Sections {
+        prefixes: prefix_records,
+        edges: edge_records,
+    })
 }
 
 pub(super) fn build_starts(
     chain: &MarkovChain,
-    prefix_to_id: &HashMap<[TokenId; 3], u32>,
+    prefix_to_id: &Model3PrefixIndex,
 ) -> Result<Vec<StartRecord>, DynError> {
     let mut entries = chain
         .starts
@@ -209,7 +223,7 @@ fn append_model3_group(
     min_edge_count: Count,
     prefix_records: &mut Vec<Prefix3Record>,
     edge_records: &mut Vec<EdgeRecord>,
-    prefix_to_id: &mut HashMap<[TokenId; 3], u32>,
+    prefix_to_id: &mut Model3PrefixIndex,
 ) -> Result<(u32, u32), DynError> {
     let prefix_start = u32_from_usize(prefix_records.len(), "model3 prefix start")?;
     let mut retained_prefix_len = 0_u32;
@@ -242,7 +256,7 @@ fn append_model3_prefix(
     min_edge_count: Count,
     prefix_records: &mut Vec<Prefix3Record>,
     edge_records: &mut Vec<EdgeRecord>,
-    prefix_to_id: &mut HashMap<[TokenId; 3], u32>,
+    prefix_to_id: &mut Model3PrefixIndex,
 ) -> Result<bool, DynError> {
     let w3 = prefix[2];
     validate_token_id(w3, token_count, "model3 prefix.w3")?;
@@ -378,13 +392,13 @@ mod tests {
         chain.model3.insert([2, 3, 4], HashMap::from([(5, 1_u64)]));
         chain.model3.insert([2, 3, 5], HashMap::from([(6, 2_u64)]));
 
-        let (pairs, prefixes, _edges, prefix_to_id) =
+        let (model3, prefix_to_id) =
             build_model3(&chain, 7, 2).expect("build_model3 should succeed");
 
-        assert_eq!(pairs.len(), 1);
-        assert_eq!(pairs[0].prefix_start, 0);
-        assert_eq!(pairs[0].prefix_len, 1);
-        assert_eq!(prefixes.len(), 1);
+        assert_eq!(model3.pairs.len(), 1);
+        assert_eq!(model3.pairs[0].prefix_start, 0);
+        assert_eq!(model3.pairs[0].prefix_len, 1);
+        assert_eq!(model3.prefixes.len(), 1);
         assert_eq!(prefix_to_id.len(), 1);
         assert!(prefix_to_id.contains_key(&[2, 3, 5]));
         assert!(!prefix_to_id.contains_key(&[2, 3, 4]));
@@ -397,15 +411,14 @@ mod tests {
         chain.model2.insert([2, 4], HashMap::from([(6, 1_u64)]));
         chain.model2.insert([2, 5], HashMap::from([(6, 2_u64)]));
 
-        let (pairs, prefixes, _edges) =
-            build_model2(&chain, 7, 2).expect("build_model2 should succeed");
+        let model2 = build_model2(&chain, 7, 2).expect("build_model2 should succeed");
 
-        assert_eq!(pairs.len(), 1);
-        assert_eq!(pairs[0].w1, 2);
-        assert_eq!(pairs[0].prefix_start, 0);
-        assert_eq!(pairs[0].prefix_len, 1);
-        assert_eq!(prefixes.len(), 1);
-        assert_eq!(prefixes[0].w2, 5);
+        assert_eq!(model2.pairs.len(), 1);
+        assert_eq!(model2.pairs[0].w1, 2);
+        assert_eq!(model2.pairs[0].prefix_start, 0);
+        assert_eq!(model2.pairs[0].prefix_len, 1);
+        assert_eq!(model2.prefixes.len(), 1);
+        assert_eq!(model2.prefixes[0].w2, 5);
     }
 
     #[test]

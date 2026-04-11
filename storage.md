@@ -1,277 +1,163 @@
-# Discord Markov Bot 保存フォーマット仕様 v3 草案
+# Discord Markov Bot 保存フォーマット仕様 v5
 
 ## 概要
 
-このドキュメントは、Discord Bot 用のマルコフ連鎖学習データを保存するためのバイナリフォーマット仕様案を定義する。
+このドキュメントは `markov_bot` の学習済み Markov 連鎖を保存する `.mkv3` バイナリ形式の実装仕様を定義する。
 
-本フォーマットは、主に以下を目的とする。
+v5 の目的は次の 3 点である。
 
-- 学習時に更新しやすい内部表現を別に持つこと
-- 生成時に高速に読み取れる読み取り専用形式へ変換すること
-- 短文チャットでも生成不能に陥りにくい backoff 構造を持つこと
-- mmap に適した連続配置を採用すること
-- 将来のバージョン拡張に耐えられること
+- reader / writer / validator が同じ section 定義を共有できること
+- 各 section の offset / size を固定ヘッダの手書き列挙ではなく descriptor table で表現すること
+- 読み取り専用の完成形データとして高速に検証・復元できること
 
-基本方針として、**学習用データ** と **生成用データ** は分離する。
-
-- 学習中: count ベースの更新しやすい構造
-- 保存時: cumulative ベースの読み取り専用構造へ変換
-- 生成時: cumulative 化済みファイルのみを使用
-
-また、チャット用途では 1 語返信や短文が多いため、単一の高次モデルのみではなく、**複数次数のモデルを併存**させる。
+旧 v4 以前との互換性は持たない。reader は v5 のみを受理する。
 
 ---
 
-## 設計方針
+## 基本方針
 
-### 1. 学習用と生成用を分ける
-
-学習中の構造は更新効率を優先し、保存時に生成向けへ変換する。
-
-理由:
-
-- cumulative 形式は生成時に高速
-- cumulative 形式は部分更新に弱い
-- count 形式は学習時の更新に向く
-- 学習中と生成中で求められる最適化方向が異なる
-
-そのため、本保存フォーマットは **読み取り専用の完成品** として設計する。
-
----
-
-### 2. 高次モデルと低次モデルを併存させる
-
-チャットでは以下のような短い応答が多い。
-
-- 草
-- 了解
-- なるほど
-- え？
-- はい
-
-このため、高次モデルだけでは文脈不足で遷移が見つからないケースが増える。
-
-したがって、保存ファイルには以下の複数モデルを同梱する。
-
-- order-3 モデル
-- order-2 モデル
-- order-1 モデル
-
-生成時は以下の順で backoff する。
-
-1. order-3 を試す
-2. 見つからなければ order-2
-3. さらに見つからなければ order-1
-4. 最後は `<EOS>` または文頭分布へフォールバックする
-
----
-
-### 3. 次数の定義を明確にする
-
-本仕様では、**order-N モデル** を「直近 N 語を prefix として次語を予測するモデル」と定義する。
-
-- order-3: `(t-2, t-1, t) -> next`
-- order-2: `(t-1, t) -> next`
-- order-1: `(t) -> next`
-
-この定義により、backoff の説明と検索手順を一貫して記述できる。
-
----
-
-## 用語
-
-- **Token**: 分かち書き後の 1 単位
-- **TokenId**: 語彙表中の token を指す整数 ID
-- **Prefix**: 次語選択時の文脈
-- **Edge**: ある prefix から遷移可能な次 token 候補
-- **Count**: 学習中の生頻度
-- **Cumulative**: 保存時の累積和
-- **Total**: ある prefix に属する edge 群の最終 cumulative 値
-- **Start distribution**: 文頭生成時に使用する開始分布
-
----
-
-## トークン化方針
-
-文字列はそのまま保持せず、すべて `TokenId` に変換する。
-
-- `TokenId = u32`
-- 語彙表は `TokenId <-> String` の対応を持つ
-
-例:
-
-- `0 = <BOS>`
-- `1 = <EOS>`
-- `2 = 今日は`
-- `3 = 雨`
-- `4 = です`
-
-これにより、prefix や edge に文字列を重複して持たずに済む。
+- 学習中の `MarkovChain` は更新効率を優先した構造を使う
+- 保存時に cumulative 形式の読み取り専用レコード群へ変換する
+- 保存ファイルには order-3 / order-2 / order-1 の 3 モデルを同梱する
+- section 配置は `Header + SectionDescriptor[] + aligned section bodies` とする
+- section body は canonical order で 1 回ずつのみ出現する
 
 ---
 
 ## 前処理互換性
 
-保存ファイルは token 化前の前処理仕様にも依存するため、reader / writer 間の互換性を保つには、以下の差異を識別可能にする必要がある。
+保存ファイルは token 化前の前処理仕様にも依存する。
 
-- tokenizer の種類
-- Unicode 正規化方式
-- メンションや URL の正規化有無
-- 改行や句読点を token として保持するか
-- 絵文字や顔文字の扱い
-- repeated character の圧縮有無
-
-そのため、ヘッダには少なくとも以下に相当する情報を持てるようにする。
+v5 では header に以下を保持し、reader / writer の一致を強制する。
 
 - `tokenizer_version`
 - `normalization_flags`
 
-v1 では詳細仕様を固定しないが、**writer と reader は同一前処理系を前提とする**。
+現在の実装値は以下で固定である。
+
+- `tokenizer_version = 1`
+- `normalization_flags = 0`
 
 ---
 
-## 論理構造
+## ファイル全体構造
 
-保存ファイルは以下の論理要素から構成される。
+ファイルは以下の順で並ぶ。
 
-- Header
-- VocabOffsets
-- VocabBlob
-- StartRecords
-- Model3PairRecords
-- Model3PrefixRecords
-- Model3EdgeRecords
-- Model2PairRecords
-- Model2PrefixRecords
-- Model2EdgeRecords
-- Model1PrefixRecords
-- Model1EdgeRecords
+1. `Header`
+2. `SectionDescriptor[11]`
+3. 8-byte aligned metadata padding
+4. section bodies
 
-### 各要素の役割
+section bodies 自体は descriptor が指す位置に配置される。各 section の `offset` は必ず 8-byte aligned でなければならない。
 
-- Header: ファイル全体情報
-- VocabOffsets: トークン文字列のオフセット表
-- VocabBlob: UTF-8 文字列本体
-- StartRecords: 文頭候補分布
-- Model3PairRecords: order-3 の第 1 段索引
-- Model3PrefixRecords: order-3 の完全 prefix 一覧
-- Model3EdgeRecords: order-3 の遷移候補
-- Model2PairRecords: order-2 の第 1 段索引
-- Model2PrefixRecords: order-2 の prefix 一覧
-- Model2EdgeRecords: order-2 の遷移候補
-- Model1PrefixRecords: order-1 の prefix 一覧
-- Model1EdgeRecords: order-1 の遷移候補
+セクション種別は固定で、descriptor は次の canonical order だけを許可する。
 
----
-
-## バイナリエンコーディング方針
-
-### エンディアン
-
-v1 では **little-endian 固定** とする。
-
-### アラインメント
-
-- すべてのセクション開始 offset は 8 バイト境界に揃えることを推奨する
-- v1 reader は非整列でも読めてもよいが、writer は可能な限り 8 バイト境界へ揃えるべきである
-
-### レコード表現
-
-このドキュメント中の `struct` は **論理構造** を示すものであり、そのまま Rust のメモリ表現と一致することを必須とはしない。
-
-実装では以下のどちらでもよい。
-
-- バイト列を明示 decode する
-- `#[repr(C)]` 等で ABI を固定し、十分な検証後に読む
-
-ただし、移植性の観点からは前者が推奨である。
+1. `VocabOffsets`
+2. `VocabBlob`
+3. `Starts`
+4. `Model3Pairs`
+5. `Model3Prefixes`
+6. `Model3Edges`
+7. `Model2Pairs`
+8. `Model2Prefixes`
+9. `Model2Edges`
+10. `Model1Prefixes`
+11. `Model1Edges`
 
 ---
 
 ## Header
 
-ファイル先頭には固定長ヘッダを置く。
+header は固定長 44 bytes で、little-endian とする。
 
 ```rust
 struct Header {
-    magic: [u8; 8],   // 例: b"MKV3BIN\0"
-    version: u32,     // 破壊的変更時に更新
-    flags: u32,       // 後方互換拡張用
-
-    tokenizer_version: u32,
-    normalization_flags: u32,
-
-    token_count: u32,
-    start_count: u32,
-
-    model3_pair_count: u32,
-    model3_prefix_count: u32,
-    model3_edge_count: u32,
-
-    model2_pair_count: u32,
-    model2_prefix_count: u32,
-    model2_edge_count: u32,
-
-    model1_prefix_count: u32,
-    model1_edge_count: u32,
-
-    vocab_offsets_offset: u64,
-    vocab_blob_offset: u64,
-    start_offset: u64,
-
-    model3_pair_offset: u64,
-    model3_prefix_offset: u64,
-    model3_edge_offset: u64,
-
-    model2_pair_offset: u64,
-    model2_prefix_offset: u64,
-    model2_edge_offset: u64,
-
-    model1_prefix_offset: u64,
-    model1_edge_offset: u64,
-
-    file_size: u64,
-    checksum: u64,    // v3 実装では FNV-1a 64bit。計算時は checksum フィールドを 0 として扱う
+    magic: [u8; 8],              // b"MKV3BIN\0"
+    version: u32,                // 5
+    flags: u32,                  // vocab blob compression flags
+    tokenizer_version: u32,      // 1
+    normalization_flags: u32,    // 0
+    section_count: u32,          // 11
+    file_size: u64,              // ファイル全体サイズ
+    checksum: u64,               // FNV-1a 64-bit
 }
-````
+```
 
-### 補足
+### Header flags
 
-`flags` は将来拡張用とする。
+`flags` は現在 `VocabBlob` の圧縮方式のみを表す。
 
-例:
+- `0x0000_0001`: RLE
+- `0x0000_0002`: Zstd
+- `0x0000_0004`: LZ4 (lz4_flex block format)
 
-- 64bit cumulative 使用フラグ
-- 圧縮有無
-- 予約領域利用有無
-
-v1 では未知の `flags` を見た reader は **拒否** することを推奨する。
+0 または上記いずれか 1 つのみ許可する。複数同時指定は不正。
 
 ---
 
-## 語彙表
+## SectionDescriptor
 
-語彙表は以下の 2 セクションで構成する。
+descriptor は固定長 24 bytes で、little-endian とする。
+
+```rust
+struct SectionDescriptor {
+    kind: u32,   // SectionKind
+    flags: u32,  // 現在は常に 0
+    offset: u64, // section body start
+    size: u64,   // section byte length
+}
+```
+
+### SectionKind
+
+```text
+1  = VocabOffsets
+2  = VocabBlob
+3  = Starts
+4  = Model3Pairs
+5  = Model3Prefixes
+6  = Model3Edges
+7  = Model2Pairs
+8  = Model2Prefixes
+9  = Model2Edges
+10 = Model1Prefixes
+11 = Model1Edges
+```
+
+`flags` は v5 では常に 0 でなければならない。
+
+---
+
+## 語彙セクション
 
 ### VocabOffsets
 
-`u64 * (token_count + 1)` の配列。
-
-各トークン文字列の開始位置を保持する。
+- `u64` 配列
+- 長さは `token_count + 1`
+- 先頭値は必ず `0`
+- 非減少列でなければならない
+- 最終要素が `VocabBlob` の復号後サイズを表す
 
 ### VocabBlob
 
-すべてのトークン文字列を UTF-8 の連結バイト列として保持する。
+- token UTF-8 bytes を連結した blob
+- `Header.flags` に従って plain / RLE / Zstd / LZ4 で格納される
+- 復号後サイズは `VocabOffsets.last()` と一致しなければならない
 
-`offsets[i]..offsets[i+1]` が token `i` の文字列本体となる。
+語彙復元後、以下を満たす必要がある。
+
+- token id 0 は `<BOS>`
+- token id 1 は `<EOS>`
+- 重複 token は禁止
 
 ---
 
-## 文頭分布
+## レコードセクション
 
-文頭候補は cumulative 分布として保持する。
+すべて little-endian。固定サイズ section は `descriptor.size % record_size == 0` を満たさなければならない。
 
-v1 では、開始候補は **order-3 prefix への参照** とする。
+### Starts (12 bytes)
 
 ```rust
 struct StartRecord {
@@ -280,38 +166,10 @@ struct StartRecord {
 }
 ```
 
-### 意図
+- `prefix_id` は `Model3Prefixes` の index
+- `cumulative` は strictly increasing
 
-- 開始時点で order-3 状態へ直接入れる
-- triplet を重複保存しない
-- 生成処理を統一できる
-
-### 前提
-
-短文開始を含め、文頭は `<BOS>` により埋められた正規化済み prefix として扱う。
-
-例:
-
-- 1 語目開始前: `(<BOS>, <BOS>, <BOS>)`
-- 2 語目開始前: `(<BOS>, <BOS>, token1)`
-- 3 語目開始前: `(<BOS>, token1, token2)`
-
----
-
-## Model3
-
-## 概要
-
-order-3 モデルは以下の 2 段階索引で管理する。
-
-1. `(w1, w2)` を引く
-2. その範囲内で `w3` を引く
-
-これにより、全 prefix を毎回二分探索するより高速に検索できる。
-
----
-
-## Model3 PairRecords
+### Model3Pairs (16 bytes)
 
 ```rust
 struct Pair3Record {
@@ -322,13 +180,7 @@ struct Pair3Record {
 }
 ```
 
-### 役割
-
-`(w1, w2)` に対応する `Prefix3Record` の範囲を示す。
-
----
-
-## Model3 PrefixRecords
+### Model3Prefixes (20 bytes)
 
 ```rust
 struct Prefix3Record {
@@ -339,19 +191,7 @@ struct Prefix3Record {
 }
 ```
 
-### 役割
-
-- `w3` をキーに完全な 3 語 prefix を表現する
-- 遷移候補の edge 範囲を持つ
-- `total` は累積和の最終値を保持する
-
-### 備考
-
-`w1, w2` は `Pair3Record` 側に持たせるため、ここでは重複保持しない。
-
----
-
-## Model3 EdgeRecords
+### Model3Edges (12 bytes)
 
 ```rust
 struct EdgeRecord {
@@ -360,44 +200,7 @@ struct EdgeRecord {
 }
 ```
 
-### 役割
-
-ある prefix に対する次トークン候補を cumulative 分布で保持する。
-
-例:
-
-生カウント:
-
-- A: 3
-- B: 5
-- C: 2
-
-保存時:
-
-- A -> 3
-- B -> 8
-- C -> 10
-
-この場合、合計重みは最後の `cumulative = 10` となる。
-
----
-
-## Model2
-
-## 概要
-
-order-2 モデルは **直近 2 語** を prefix とする。
-
-v3 では order-2 にも 2 段索引を導入する。
-
-1. `w1` を `Pair2Record` で引く
-2. 該当範囲内で `w2` を `Prefix2Record` から引く
-
-すなわち、order-3 が存在しない場合は `(t-1, t)` を用いて検索する。
-
----
-
-## Model2 PairRecords
+### Model2Pairs (12 bytes)
 
 ```rust
 struct Pair2Record {
@@ -407,14 +210,7 @@ struct Pair2Record {
 }
 ```
 
-### 役割
-
-- `w1` に対応する `Prefix2Record` の範囲を示す
-- order-2 の検索で全 prefix 走査を避ける
-
----
-
-## Model2 PrefixRecords
+### Model2Prefixes (24 bytes)
 
 ```rust
 struct Prefix2Record {
@@ -426,37 +222,11 @@ struct Prefix2Record {
 }
 ```
 
-### 役割
+### Model2Edges
 
-- 2 語 prefix に対応する遷移候補の範囲を持つ
-- `total` により乱択範囲を即時取得できる
+- `EdgeRecord` の配列
 
----
-
-## Model2 EdgeRecords
-
-```rust
-struct EdgeRecord {
-    next: u32,
-    cumulative: u64,
-}
-```
-
-order-3 と同じ構造を用いる。
-
----
-
-## Model1
-
-## 概要
-
-order-1 モデルは **直近 1 語** を prefix とする。
-
-order-2 も失敗した場合の最終 backoff 先となる。
-
----
-
-## Model1 PrefixRecords
+### Model1Prefixes (20 bytes)
 
 ```rust
 struct Prefix1Record {
@@ -467,328 +237,49 @@ struct Prefix1Record {
 }
 ```
 
----
+### Model1Edges
 
-## Model1 EdgeRecords
-
-```rust
-struct EdgeRecord {
-    next: u32,
-    cumulative: u64,
-}
-```
+- `EdgeRecord` の配列
 
 ---
 
-## ソート方針
+## 検証規則
 
-### prefix の並び
+reader は少なくとも以下を検証する。
 
-- Model3 PairRecords: `(w1, w2)` の辞書順
-- Model3 PrefixRecords: 各 pair 範囲内で `w3` 昇順
-- Model2 PairRecords: `w1` 昇順
-- Model2 PrefixRecords: 各 pair 範囲内で `w2` 昇順
-- Model1 PrefixRecords: `w1` 昇順
-
-### edge の並び
-
-v1 では `next` 昇順を採用する。
-
-理由:
-
-- 同じ学習結果から常に同じ保存結果が得られる
-- デバッグしやすい
-- cumulative + 二分探索では頻度順の利得が比較的小さい
-- writer の実装が単純になる
-
----
-
-## 学習時の内部表現
-
-学習時は更新しやすい count ベース構造を持つ。
-
-概念例:
-
-```rust
-HashMap<[u32; 3], HashMap<u32, u32>>
-HashMap<[u32; 2], HashMap<u32, u32>>
-HashMap<[u32; 1], HashMap<u32, u32>>
-
-HashMap<String, u32>  // string -> token
-Vec<String>          // token -> string
-
-HashMap<[u32; 3], u32> // start count
-```
-
-ただし、これはあくまで概念説明であり、実装はこれに限定されない。
-
-例えば以下でもよい。
-
-- `HashMap<prefix, SmallVec<...>>`
-- arena / slab ベース実装
-- 一時ファイルへフラッシュしつつ後段でマージする方式
-- ソート済み `Vec` を用いた集約方式
+- `magic == b"MKV3BIN\0"`
+- `version == 5`
+- `section_count == 11`
+- `tokenizer_version == 1`
+- `normalization_flags == 0`
+- `file_size` が実サイズと一致する
+- `checksum` が一致する
+- descriptor の `kind` が canonical order で 1 回ずつ現れる
+- descriptor `flags == 0`
+- section `offset` が 8-byte aligned
+- metadata end より前に section が始まらない
+- sections が overlap しない
+- gap にある padding bytes はすべて 0
+- 最終 section end が `file_size` と一致する
+- fixed-size section が record size の整数倍
+- token id / prefix range / edge range が妥当
+- cumulative 値が strictly increasing
+- prefix `total` が edge の最終 cumulative と一致する
 
 ---
 
-## 学習処理
+## writer の要件
 
-1 文を読むたびに以下を更新する。
-
-- order-3
-- order-2
-- order-1
-- start distribution
-
-例:
-
-`<BOS> <BOS> <BOS> なるほど <EOS>`
-
-から以下を積む。
-
-- order-3: `(<BOS>, <BOS>, <BOS>) -> なるほど`
-- order-3: `(<BOS>, <BOS>, なるほど) -> <EOS>`
-- order-2: `(<BOS>, <BOS>) -> なるほど`
-- order-2: `(<BOS>, なるほど) -> <EOS>`
-- order-1: `(<BOS>) -> なるほど`
-- order-1: `(なるほど) -> <EOS>`
-
-start distribution には、文頭時点の正規化済み order-3 prefix を積む。
+- writer は canonical order で descriptor を生成する
+- metadata end と各 section start は 8-byte aligned にする
+- section 間の gap は 0 埋めする
+- checksum は checksum field 自体を 0 とみなした FNV-1a 64-bit で計算する
+- `save_chain` は encode 後に `load_chain` 相当の decode を実行し、自己検証に成功した payload のみ書き出す
 
 ---
 
-## 保存時の変換手順
-
-count ベースから cumulative ベースへ変換する。
-
-### 基本手順
-
-1. 語彙表を確定する
-2. 各次数の prefix を列挙する
-3. prefix をソートする
-4. 各 prefix の遷移 `next -> count` をソートする
-5. 累積和を計算する
-6. `EdgeRecord` を出力する
-7. 最後の cumulative を `total` に保存する
-8. 文頭候補も cumulative 化する
-9. 各セクションの offset と count をヘッダへ記録する
-10. 最後に整合性検査を行う
-
----
-
-## Reader / Writer の責務
-
-### Writer の責務
-
-- count ベース構造から cumulative ベースへ変換する
-- 各レコードを所定順序でソートする
-- 重複 prefix / edge を統合する
-- Header の count / offset / file_size を正しく埋める
-- 書き出し後に整合性検査を行う
-
-### Reader の責務
-
-- Header を検証する
-- 未対応 version / flags を拒否する
-- 各 offset / count / 範囲整合性を確認する
-- 不正ファイルを安全に拒否する
-- 検証完了後のみ検索・サンプリング処理を行う
-
----
-
-## 整合性制約
-
-reader は少なくとも以下を検査すべきである。
-
-### Header 全体
-
-- `magic` が正しい
-- `version` が対応範囲内
-- `file_size` が実ファイル長と一致するか、または超過しない
-- 各 `*_offset` が `file_size` 以下
-- 各セクション範囲が相互に矛盾しない
-
-### 語彙表
-
-- `VocabOffsets.len() == token_count + 1`
-- `offsets[0] == 0`
-- `offsets[i] <= offsets[i + 1]`
-- `offsets[token_count] == vocab_blob_size`
-- すべての token 文字列範囲が `VocabBlob` 内に収まる
-
-### StartRecords
-
-- `start_count == StartRecords.len()`
-- `start_count == 0` なら文頭生成不能として拒否してよい
-- `prefix_id < model3_prefix_count`
-- `cumulative` は strictly increasing
-- 最終 `cumulative > 0`
-
-### Prefix / Edge
-
-- `edge_start + edge_len <= edge_count`
-- `prefix_start + prefix_len <= prefix_count`
-- `edge_len == 0` なら `total == 0`
-- `edge_len > 0` なら最後の edge の `cumulative == total`
-- `cumulative` は strictly increasing
-- `total > 0` なら少なくとも 1 edge 存在
-- 各 prefix キー列がソート済み
-- 各 edge の `next` がソート済み
-
----
-
-## 読み出し手順
-
-### 文頭選択
-
-1. `StartRecords` の最後の `cumulative` を total とする
-2. `1..=total` の乱数を引く
-3. `cumulative >= r` を満たす最初の要素を二分探索する
-4. `prefix_id` から開始 prefix を取得する
-
-### 1 ステップ生成
-
-現在の文脈を `(a, b, c)` とする。
-
-#### order-3
-
-1. `(a, b)` を `Pair3Record` から二分探索
-2. 該当範囲内で `c` を `Prefix3Record` から二分探索
-3. edge 範囲を取得
-4. `1..=total` で乱数を引く
-5. edge 範囲内で `cumulative >= r` を二分探索
-6. `next` を出力する
-
-#### order-2
-
-order-3 が見つからなければ `(b, c)` を `Prefix2Record` から探す。
-
-#### order-1
-
-order-2 も見つからなければ `c` を `Prefix1Record` から探す。
-
-#### 最終フォールバック
-
-order-1 も見つからなければ以下のいずれかを行う。
-
-- `<EOS>` を返す
-- 文頭分布へ戻す
-- 外部の fail-safe 処理へ移譲する
-
-v1 では挙動を実装側ポリシーに委ねるが、保存フォーマットとは独立に固定しておくのが望ましい。
-
----
-
-## cumulative のビット幅
-
-v3 では `cumulative` および `total` を `u64` とする。
-
-### 利点
-
-- 長期運用や大規模学習でも overflow 耐性が高い
-- 学習時の `Count = u64` と保存形式の整合が取れる
-
-### 注意点
-
-- v1 (`u32 cumulative`) とはバイナリ互換がない
-- reader は `version` を見て厳密に拒否/受理を分ける必要がある
-
----
-
-## 3 次だけ 2 段索引にする理由
-
-v1 では order-3 のみ `(w1, w2)` による第 1 段索引を持つ。
-
-理由:
-
-- order-3 は prefix 数が最も増えやすい
-- 全 order-3 prefix を直接二分探索するより高速になりやすい
-- order-2 / order-1 は件数が比較的少なく、単純二分探索で十分な場合が多い
-- 構造の複雑化を最小限に抑えられる
-
-必要になれば将来版で order-2 にも補助索引を追加できる。
-
----
-
-## 長所
-
-- 学習用と生成用の責務が明確に分離される
-- 保存ファイルを読み取り専用に最適化できる
-- cumulative により生成時の選択が高速
-- low-order backoff により短文チャットに強い
-- mmap と相性が良い
-- 語彙表と prefix / edge の分離で重複を抑えられる
-- 検証項目を定義しやすく、壊れたファイルを拒否しやすい
-
----
-
-## 短所
-
-- 保存時に変換処理が必要
-- 部分更新や追加学習には向かない
-- 複数次数を持つ分、保存サイズは増える
-- writer / reader 実装が多少長くなる
-- tokenizer 仕様が変わると語彙互換性が崩れる
-
----
-
-## versioning 方針
-
-- `version` は破壊的変更時に更新する
-- `flags` は後方互換拡張用に限定する
-- 未知の `version` は reader が拒否する
-- 未知の必須 `flags` は reader が拒否する
-- 互換性が曖昧になる変更は無理に `flags` で吸収せず、明示的に `version` を上げる
-
----
-
-## v3 で必須のもの
-
-- count ベース学習 + cumulative ベース保存
-- order-3 / order-2 / order-1 の併存
-- `TokenId` 化された語彙表
-- StartRecords
-- order-3 の 2 段索引
-- 各種 count / offset を持つ Header
-- reader 側の基本整合性検査
-
----
-
-## v3 で推奨のもの
-
-- 8 バイト境界へのセクション整列
-- checksum の導入
-- tokenizer / normalization 識別情報の保持
-- writer 完了後の自己検査
-- ソート済み保証の検証
-
----
-
-## 将来の改善候補
-
-- 低頻度語の pruning
-- alias method 導入の検討
-- 文頭専用モデルの追加
-- 圧縮形式の追加
-- tokenizer 仕様の完全固定
-
----
-
-## 結論
-
-Discord のチャット用途を想定する場合、本保存フォーマットは以下の方針が適している。
-
-- 学習時は count ベース
-- 保存時は cumulative ベース
-- 生成時は読み取り専用ファイルを使用
-- order-3 を主モデルとし、order-2・order-1 を backoff 用に併存させる
-- reader は検証後のみ生成に入る
-
-この構成により、
-
-- 長文では高次文脈の自然さ
-- 短文では低次モデルの生存性
-- 生成時の単純かつ高速な処理
-- 仕様としての明確さと将来拡張性
-
-を両立できる。
+## 互換性ポリシー
+
+- v5 reader は v4 以前を読まない
+- 旧 `.mkv3` データは再生成前提とする
+- 互換 shim / 移行用 dual reader / one-shot converter は持たない

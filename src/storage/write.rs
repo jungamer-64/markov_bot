@@ -1,4 +1,4 @@
-use super::{CompiledStorage, Count, DynError, MarkovChain, StorageCompressionMode};
+use super::{Count, DynError, MarkovChain, StorageCompressionMode, StorageSections};
 
 mod compile;
 mod encode;
@@ -6,13 +6,13 @@ mod encode;
 pub(super) fn compile_chain(
     chain: &MarkovChain,
     min_edge_count: Count,
-) -> Result<CompiledStorage, DynError> {
+) -> Result<StorageSections, DynError> {
     compile::compile_chain(chain, min_edge_count)
 }
 
 pub(super) fn encode_storage(
-    compiled: &CompiledStorage,
+    sections: &StorageSections,
     compression_mode: StorageCompressionMode,
 ) -> Result<Vec<u8>, DynError> {
-    encode::encode_storage(compiled, compression_mode)
+    encode::encode_storage(sections, compression_mode)
 }

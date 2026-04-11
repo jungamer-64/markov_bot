@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use super::super::super::{
-    Count, DynError, EdgeRecord, Prefix1Record, Prefix2Record, Prefix3Record, StartRecord, TokenId,
-    usize_from_u32,
+    Count, DynError, EdgeRecord, Model1Sections, Model2Sections, Model3Sections, StartRecord,
+    TokenId, usize_from_u32,
 };
 
 pub(super) fn decode_starts(
@@ -34,17 +34,16 @@ pub(super) fn decode_starts(
 }
 
 pub(super) fn decode_model3(
+    model: &Model3Sections,
     model3_keys: &[[TokenId; 3]],
-    prefixes: &[Prefix3Record],
-    edges: &[EdgeRecord],
 ) -> Result<HashMap<[TokenId; 3], HashMap<TokenId, Count>>, DynError> {
     let mut decoded = HashMap::new();
 
-    for (index, prefix) in prefixes.iter().enumerate() {
+    for (index, prefix) in model.prefixes.iter().enumerate() {
         let key = *model3_keys
             .get(index)
             .ok_or("model3 prefix index is out of bounds")?;
-        let edge_map = decode_edge_map(edges, prefix.edge_start, prefix.edge_len)?;
+        let edge_map = decode_edge_map(model.edges.as_slice(), prefix.edge_start, prefix.edge_len)?;
         decoded.insert(key, edge_map);
     }
 
@@ -52,14 +51,13 @@ pub(super) fn decode_model3(
 }
 
 pub(super) fn decode_model2(
-    prefixes: &[Prefix2Record],
-    edges: &[EdgeRecord],
+    model: &Model2Sections,
 ) -> Result<HashMap<[TokenId; 2], HashMap<TokenId, Count>>, DynError> {
     let mut decoded = HashMap::new();
 
-    for prefix in prefixes {
+    for prefix in &model.prefixes {
         let key = [prefix.w1, prefix.w2];
-        let edge_map = decode_edge_map(edges, prefix.edge_start, prefix.edge_len)?;
+        let edge_map = decode_edge_map(model.edges.as_slice(), prefix.edge_start, prefix.edge_len)?;
         decoded.insert(key, edge_map);
     }
 
@@ -67,13 +65,12 @@ pub(super) fn decode_model2(
 }
 
 pub(super) fn decode_model1(
-    prefixes: &[Prefix1Record],
-    edges: &[EdgeRecord],
+    model: &Model1Sections,
 ) -> Result<HashMap<TokenId, HashMap<TokenId, Count>>, DynError> {
     let mut decoded = HashMap::new();
 
-    for prefix in prefixes {
-        let edge_map = decode_edge_map(edges, prefix.edge_start, prefix.edge_len)?;
+    for prefix in &model.prefixes {
+        let edge_map = decode_edge_map(model.edges.as_slice(), prefix.edge_start, prefix.edge_len)?;
         decoded.insert(prefix.w1, edge_map);
     }
 

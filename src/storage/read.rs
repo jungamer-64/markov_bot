@@ -6,10 +6,10 @@ mod rebuild;
 
 pub(super) fn decode_chain(bytes: &[u8]) -> Result<MarkovChain, DynError> {
     let header = header::validate_header(bytes)?;
-    let ranges = header::build_section_ranges(bytes, &header)?;
-    let parsed = parse::parse_storage(bytes, &header, &ranges)?;
+    let table = header::build_section_table(bytes, &header)?;
+    let sections = parse::parse_storage(bytes, &header, &table)?;
 
-    rebuild::rebuild_chain(parsed)
+    rebuild::rebuild_chain(sections)
 }
 
 fn read_exact<'a>(bytes: &'a [u8], cursor: &mut usize, count: usize) -> Result<&'a [u8], DynError> {

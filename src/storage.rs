@@ -15,13 +15,14 @@ mod write;
 mod tests;
 
 use types::{
-    CompiledStorage, EdgeRecord, Header, Model3Build, Pair2Record, Pair3Record, ParsedStorage,
-    Prefix1Record, Prefix2Record, Prefix3Record, SectionCounts, SectionRanges, SectionSizes,
-    StartRecord,
+    EdgeRecord, FixedRecord, Header, Model1Sections, Model2Sections, Model3PrefixIndex,
+    Model3Sections, Pair2Record, Pair3Record, Prefix1Record, Prefix2Record, Prefix3Record,
+    SectionDescriptor, SectionEntry, SectionKind, SectionTable, StartRecord, StorageSections,
+    VocabSections,
 };
 
 const MAGIC: [u8; 8] = *b"MKV3BIN\0";
-const VERSION: u32 = 4;
+const VERSION: u32 = 5;
 const FLAGS: u32 = 0;
 const FLAG_VOCAB_BLOB_RLE: u32 = 1 << 0;
 const FLAG_VOCAB_BLOB_ZSTD: u32 = 1 << 1;
@@ -31,7 +32,10 @@ const TOKENIZER_VERSION: u32 = 1;
 const NORMALIZATION_FLAGS: u32 = 0;
 const CHECKSUM_PLACEHOLDER: u64 = 0;
 
-const HEADER_SIZE: usize = 176;
+const HEADER_SIZE: usize = 44;
+const DESCRIPTOR_SIZE: usize = 24;
+const SECTION_COUNT: usize = 11;
+const SECTION_COUNT_U32: u32 = 11;
 const CHECKSUM_SIZE: usize = std::mem::size_of::<u64>();
 const CHECKSUM_OFFSET: usize = HEADER_SIZE - CHECKSUM_SIZE;
 
@@ -101,8 +105,8 @@ pub async fn save_chain(
         fs::create_dir_all(parent).await?;
     }
 
-    let compiled = write::compile_chain(chain, min_edge_count)?;
-    let payload = write::encode_storage(&compiled, compression_mode)?;
+    let sections = write::compile_chain(chain, min_edge_count)?;
+    let payload = write::encode_storage(&sections, compression_mode)?;
 
     read::decode_chain(payload.as_slice())?;
 
@@ -166,6 +170,22 @@ fn u32_from_usize(value: usize, context: &str) -> Result<u32, DynError> {
 
 fn u64_from_usize(value: usize, context: &str) -> Result<u64, DynError> {
     u64::try_from(value).map_err(|_| format!("{context} exceeds u64 range").into())
+}
+
+fn aligned_metadata_end(section_count: usize) -> Result<u64, DynError> {
+    let header_size = u64_from_usize(HEADER_SIZE, "header size")?;
+    let descriptor_size = u64_from_usize(DESCRIPTOR_SIZE, "section descriptor size")?;
+    let descriptor_bytes =
+        bytes_for_len(section_count, descriptor_size, "section descriptor table")?;
+    Ok(align_to_eight(checked_add(
+        header_size,
+        descriptor_bytes,
+        "metadata size",
+    )?))
+}
+
+fn fixed_section_bytes<T: FixedRecord>(records: &[T], context: &str) -> Result<u64, DynError> {
+    bytes_for_len(records.len(), T::SIZE, context)
 }
 
 fn compute_checksum(bytes: &[u8]) -> Result<u64, DynError> {

@@ -2,7 +2,10 @@ use std::str;
 
 use super::super::super::{DynError, usize_from_u64};
 
-pub(super) fn decode_vocab(offsets: &[u64], blob: &[u8]) -> Result<Vec<String>, DynError> {
+pub(in crate::storage::read) fn decode_vocab(
+    offsets: &[u64],
+    blob: &[u8],
+) -> Result<Vec<String>, DynError> {
     if offsets.is_empty() {
         return Err("vocab offsets are empty".into());
     }
