@@ -1,93 +1,51 @@
-# Discord Markov Bot 保存フォーマット仕様 v6
+# Discord Markov Bot 保存フォーマット仕様 v8
 
 ## 概要
 
-このドキュメントは `markov_bot` の学習済み Markov 連鎖を保存する `.mkv3` バイナリ形式の実装仕様を定義する。
+`.mkv3` は学習済み `MarkovChain` を保存するための custom binary format である。  
+v8 では固定 6 次前提を廃止し、`MARKOV_NGRAM_ORDER >= 1` を runtime 指定できる形へ全面抽象化した。
 
-v6 の目的は次の 3 点である。
+v8 の要点は次のとおり。
 
-- order-6 / order-5 / order-4 / order-3 / order-2 / order-1 の固定 backoff モデルを同梱すること
-- reader / writer / validator が同じ section 定義を共有できること
-- 読み取り専用の完成形データとして高速に検証・復元できること
+- `ngram_order` は header に保存し、reader は runtime 設定と一致しないファイルを拒否する
+- model は `order = ngram_order .. 1` の可変個数 section として保存する
+- `Starts` は固定 6-token 参照ではなく、`ngram_order` 長の prefix を直接保存する
+- v7 以前との互換性は持たない。reader は v8 のみ受理する
 
-旧 v5 以前との互換性は持たない。reader は v6 のみを受理する。
+## 全体構造
 
----
-
-## 基本方針
-
-- 学習中の `MarkovChain` は更新効率を優先した構造を使う
-- 保存時に cumulative 形式の読み取り専用レコード群へ変換する
-- 保存ファイルには order-6 から order-1 までの 6 モデルを同梱する
-- section 配置は `Header + SectionDescriptor[] + aligned section bodies` とする
-- section body は canonical order で 1 回ずつのみ出現する
-
----
-
-## 前処理互換性
-
-保存ファイルは token 化前の前処理仕様にも依存する。
-
-v6 では header に以下を保持し、reader / writer の一致を強制する。
-
-- `tokenizer_version`
-- `normalization_flags`
-
-現在の実装値は以下で固定である。
-
-- `tokenizer_version = 1`
-- `normalization_flags = 0`
-
----
-
-## ファイル全体構造
-
-ファイルは以下の順で並ぶ。
+ファイルは次の順で並ぶ。
 
 1. `Header`
-2. `SectionDescriptor[20]`
+2. `SectionDescriptor[section_count]`
 3. 8-byte aligned metadata padding
 4. section bodies
 
-section bodies 自体は descriptor が指す位置に配置される。各 section の `offset` は必ず 8-byte aligned でなければならない。
-
-セクション種別は固定で、descriptor は次の canonical order だけを許可する。
+section body の canonical order は常に次のとおり。
 
 1. `VocabOffsets`
 2. `VocabBlob`
 3. `Starts`
-4. `Model6Pairs`
-5. `Model6Prefixes`
-6. `Model6Edges`
-7. `Model5Pairs`
-8. `Model5Prefixes`
-9. `Model5Edges`
-10. `Model4Pairs`
-11. `Model4Prefixes`
-12. `Model4Edges`
-13. `Model3Pairs`
-14. `Model3Prefixes`
-15. `Model3Edges`
-16. `Model2Pairs`
-17. `Model2Prefixes`
-18. `Model2Edges`
-19. `Model1Prefixes`
-20. `Model1Edges`
+4. `Model(order = ngram_order)`
+5. `Model(order = ngram_order - 1)`
+6. `...`
+7. `Model(order = 1)`
 
----
+したがって `section_count = 3 + ngram_order` である。
 
 ## Header
 
-header は固定長 44 bytes で、little-endian とする。
+header は little-endian の固定長 52 bytes。
 
 ```rust
 struct Header {
     magic: [u8; 8],              // b"MKV3BIN\0"
-    version: u32,                // 6
+    version: u32,                // 8
     flags: u32,                  // vocab blob compression flags
     tokenizer_version: u32,      // 1
     normalization_flags: u32,    // 0
-    section_count: u32,          // 20
+    ngram_order: u32,            // >= 1
+    section_count: u64,          // 3 + ngram_order
     file_size: u64,              // ファイル全体サイズ
     checksum: u64,               // FNV-1a 64-bit
 }
@@ -95,24 +53,22 @@ struct Header {
 
 ### Header flags
 
-`flags` は現在 `VocabBlob` の圧縮方式のみを表す。
+`flags` は `VocabBlob` 圧縮方式のみを表す。
 
 - `0x0000_0001`: RLE
 - `0x0000_0002`: Zstd
-- `0x0000_0004`: LZ4 (lz4_flex block format)
+- `0x0000_0004`: LZ4 (`lz4_flex` block format)
 
-0 または上記いずれか 1 つのみ許可する。複数同時指定は不正。
-
----
+0 または上記いずれか 1 つのみ許可する。
 
 ## SectionDescriptor
 
-descriptor は固定長 24 bytes で、little-endian とする。
+descriptor は little-endian の固定長 24 bytes。
 
 ```rust
 struct SectionDescriptor {
     kind: u32,   // SectionKind
-    flags: u32,  // 現在は常に 0
+    flags: u32,  // Model のとき order、それ以外は 0
     offset: u64, // section body start
     size: u64,   // section byte length
 }
@@ -121,31 +77,15 @@ struct SectionDescriptor {
 ### SectionKind
 
 ```text
-1  = VocabOffsets
-2  = VocabBlob
-3  = Starts
-4  = Model6Pairs
-5  = Model6Prefixes
-6  = Model6Edges
-7  = Model5Pairs
-8  = Model5Prefixes
-9  = Model5Edges
-10 = Model4Pairs
-11 = Model4Prefixes
-12 = Model4Edges
-13 = Model3Pairs
-14 = Model3Prefixes
-15 = Model3Edges
-16 = Model2Pairs
-17 = Model2Prefixes
-18 = Model2Edges
-19 = Model1Prefixes
-20 = Model1Edges
+1 = VocabOffsets
+2 = VocabBlob
+3 = Starts
+4 = Model
 ```
 
-`flags` は v6 では常に 0 でなければならない。
-
----
+- `VocabOffsets` / `VocabBlob` / `Starts` の `flags` は常に 0
+- `Model` の `flags` はその section が表す order
+- descriptor は canonical order で 1 回ずつのみ出現する
 
 ## 語彙セクション
 
@@ -154,214 +94,86 @@ struct SectionDescriptor {
 - `u64` 配列
 - 長さは `token_count + 1`
 - 先頭値は必ず `0`
-- 非減少列でなければならない
-- 最終要素が `VocabBlob` の復号後サイズを表す
+- 非減少列
+- 最終要素が `VocabBlob` 復号後サイズ
 
 ### VocabBlob
 
 - token UTF-8 bytes を連結した blob
-- `Header.flags` に従って plain / RLE / Zstd / LZ4 で格納される
+- `Header.flags` に従って plain / RLE / Zstd / LZ4 で保存される
 - 復号後サイズは `VocabOffsets.last()` と一致しなければならない
 
-語彙復元後、以下を満たす必要がある。
+語彙復元後は次を満たす必要がある。
 
-- token id 0 は `<BOS>`
-- token id 1 は `<EOS>`
-- 重複 token は禁止
+- token id `0` は `<BOS>`
+- token id `1` は `<EOS>`
 
----
+## Starts section
 
-## レコードセクション
-
-すべて little-endian。固定サイズ section は `descriptor.size % record_size == 0` を満たさなければならない。
-
-### Starts (12 bytes)
+body の先頭に `record_count: u32` を持ち、その後に `ngram_order` 長の固定レコードを並べる。
 
 ```rust
 struct StartRecord {
-    prefix_id: u32,
+    prefix: [u32; ngram_order],
     cumulative: u64,
 }
 ```
 
-- `prefix_id` は `Model6Prefixes` の index
+- `prefix` は start prefix を直接保持する
 - `cumulative` は strictly increasing
+- record size は `ngram_order * 4 + 8`
 
-### Model6Pairs (28 bytes)
+## Model section
+
+各 order ごとに 1 つの `Model` section を持つ。body 先頭は次の header。
 
 ```rust
-struct Pair6Record {
-    w1: u32,
-    w2: u32,
-    w3: u32,
-    w4: u32,
-    w5: u32,
-    prefix_start: u32,
-    prefix_len: u32,
+struct ModelSectionHeader {
+    record_count: u32,
+    edge_count: u32,
 }
 ```
 
-### Model6Prefixes (20 bytes)
+その後に `ModelRecord[record_count]`、続けて `EdgeRecord[edge_count]` を並べる。
 
 ```rust
-struct Prefix6Record {
-    w6: u32,
+struct ModelRecord {
+    prefix: [u32; order],
     edge_start: u32,
     edge_len: u32,
     total: u64,
 }
-```
 
-### Model6Edges / Model5Edges / Model4Edges / Model3Edges / Model2Edges / Model1Edges
-
-```rust
 struct EdgeRecord {
     next: u32,
     cumulative: u64,
 }
 ```
 
-### Model5Pairs (24 bytes)
+- `prefix` はその order の prefix を直接保持する
+- `edge_start` / `edge_len` は同一 section 内の `EdgeRecord` 配列を指す
+- `EdgeRecord.cumulative` は各 prefix 内で strictly increasing
+- `ModelRecord.total` はその prefix の最後の cumulative と一致しなければならない
+- `ModelRecord` size は `order * 4 + 16`
+- `EdgeRecord` size は 12 bytes
 
-```rust
-struct Pair5Record {
-    w1: u32,
-    w2: u32,
-    w3: u32,
-    w4: u32,
-    prefix_start: u32,
-    prefix_len: u32,
-}
-```
+## Validation
 
-### Model5Prefixes (20 bytes)
+reader は少なくとも次を検証する。
 
-```rust
-struct Prefix5Record {
-    w5: u32,
-    edge_start: u32,
-    edge_len: u32,
-    total: u64,
-}
-```
+- `magic`, `version`, `tokenizer_version`, `normalization_flags`
+- `ngram_order >= 1`
+- header `section_count == 3 + ngram_order`
+- descriptor canonical order と `Model.flags == order`
+- 各 section の `offset` / `size` が file 範囲内で overlap しないこと
+- `Starts` / `Model` body size が `record_count` / `edge_count` と一致すること
+- prefix / edge が token range 内であること
+- cumulative counts が strictly increasing であること
+- `edge_start` / `edge_len` が有効範囲で連続していること
+- checksum 一致
 
-### Model4Pairs (20 bytes)
+## 互換性
 
-```rust
-struct Pair4Record {
-    w1: u32,
-    w2: u32,
-    w3: u32,
-    prefix_start: u32,
-    prefix_len: u32,
-}
-```
-
-### Model4Prefixes (20 bytes)
-
-```rust
-struct Prefix4Record {
-    w4: u32,
-    edge_start: u32,
-    edge_len: u32,
-    total: u64,
-}
-```
-
-### Model3Pairs (16 bytes)
-
-```rust
-struct Pair3Record {
-    w1: u32,
-    w2: u32,
-    prefix_start: u32,
-    prefix_len: u32,
-}
-```
-
-### Model3Prefixes (20 bytes)
-
-```rust
-struct Prefix3Record {
-    w3: u32,
-    edge_start: u32,
-    edge_len: u32,
-    total: u64,
-}
-```
-
-### Model2Pairs (12 bytes)
-
-```rust
-struct Pair2Record {
-    w1: u32,
-    prefix_start: u32,
-    prefix_len: u32,
-}
-```
-
-### Model2Prefixes (24 bytes)
-
-```rust
-struct Prefix2Record {
-    w1: u32,
-    w2: u32,
-    edge_start: u32,
-    edge_len: u32,
-    total: u64,
-}
-```
-
-### Model1Prefixes (20 bytes)
-
-```rust
-struct Prefix1Record {
-    w1: u32,
-    edge_start: u32,
-    edge_len: u32,
-    total: u64,
-}
-```
-
----
-
-## 検証規則
-
-reader は少なくとも以下を検証する。
-
-- `magic == b"MKV3BIN\0"`
-- `version == 6`
-- `section_count == 20`
-- `tokenizer_version == 1`
-- `normalization_flags == 0`
-- `file_size` が実サイズと一致する
-- `checksum` が一致する
-- descriptor の `kind` が canonical order で 1 回ずつ現れる
-- descriptor `flags == 0`
-- section `offset` が 8-byte aligned
-- metadata end より前に section が始まらない
-- sections が overlap しない
-- gap にある padding bytes はすべて 0
-- 最終 section end が `file_size` と一致する
-- fixed-size section が record size の整数倍
-- token id / prefix range / edge range が妥当
-- cumulative 値が strictly increasing
-- prefix `total` が edge の最終 cumulative と一致する
-
----
-
-## writer の要件
-
-- writer は canonical order で descriptor を生成する
-- metadata end と各 section start は 8-byte aligned にする
-- section 間の gap は 0 埋めする
-- checksum は checksum field 自体を 0 とみなした FNV-1a 64-bit で計算する
-- `save_chain` は encode 後に `load_chain` 相当の decode を実行し、自己検証に成功した payload のみ書き出す
-
----
-
-## 互換性ポリシー
-
-- v6 reader は v5 以前を読まない
-- 旧 `.mkv3` データは再生成前提とする
-- 互換 shim / 移行用 dual reader / one-shot converter は持たない
+- v8 reader は v8 のみ受理する
+- v7 以前の `.mkv3` は破棄して再学習する前提
+- runtime の `MARKOV_NGRAM_ORDER` と保存済み `ngram_order` が違う場合、起動時に明示エラーで停止する

@@ -2,12 +2,12 @@ use std::future::Future;
 
 use tempfile::{Builder, TempPath};
 
-use crate::config::DynError;
-use crate::markov::MarkovChain;
+use crate::{config::DynError, markov::MarkovChain, test_support::ensure};
 
+use super::super::types::SectionKind;
 use super::super::{
-    CHECKSUM_OFFSET, DESCRIPTOR_SIZE, HEADER_SIZE, SECTION_COUNT, SectionKind,
-    StorageCompressionMode, aligned_metadata_end, compute_checksum, save_chain,
+    CHECKSUM_OFFSET, DESCRIPTOR_SIZE, HEADER_SIZE, SECTION_COUNT_BASE, StorageCompressionMode,
+    compute_checksum, descriptor_count_for_ngram_order, save_chain,
 };
 
 pub(super) const TEST_MIN_EDGE_COUNT: u64 = 1;
@@ -15,95 +15,16 @@ pub(super) const TEST_COMPRESSION_MODE: StorageCompressionMode = StorageCompress
 
 pub(super) const VERSION_OFFSET: usize = 8;
 pub(super) const FLAGS_OFFSET: usize = 12;
-pub(super) const TOKENIZER_VERSION_OFFSET: usize = 16;
-pub(super) const NORMALIZATION_FLAGS_OFFSET: usize = 20;
-pub(super) const SECTION_COUNT_OFFSET: usize = 24;
-pub(super) const FILE_SIZE_OFFSET: usize = 28;
+pub(super) const NGRAM_ORDER_OFFSET: usize = 24;
+pub(super) const SECTION_COUNT_OFFSET: usize = 28;
 pub(super) const UNSUPPORTED_FLAG: u32 = 1 << 31;
 
+#[derive(Debug, Clone, Copy)]
 pub(super) struct DescriptorView {
+    pub(super) kind: u32,
+    pub(super) flags: u32,
     pub(super) offset: u64,
     pub(super) size: u64,
-}
-
-pub(super) fn descriptor(bytes: &[u8], kind: SectionKind) -> DescriptorView {
-    let base = descriptor_base(kind);
-    DescriptorView {
-        offset: read_u64_at(bytes, base + 8).unwrap_or(0),
-        size: read_u64_at(bytes, base + 16).unwrap_or(0),
-    }
-}
-
-pub(super) fn descriptor_kind_offset(kind: SectionKind) -> usize {
-    descriptor_base(kind)
-}
-
-pub(super) fn descriptor_offset_offset(kind: SectionKind) -> usize {
-    descriptor_base(kind) + 8
-}
-
-pub(super) fn descriptor_size_offset(kind: SectionKind) -> usize {
-    descriptor_base(kind) + 16
-}
-
-pub(super) fn section_body_offset(bytes: &[u8], kind: SectionKind) -> Result<usize, DynError> {
-    usize::try_from(descriptor(bytes, kind).offset)
-        .map_err(|_error| "section offset should fit usize".into())
-}
-
-pub(super) fn section_body_size(bytes: &[u8], kind: SectionKind) -> Result<usize, DynError> {
-    usize::try_from(descriptor(bytes, kind).size)
-        .map_err(|_error| "section size should fit usize".into())
-}
-
-pub(super) fn first_padding_offset(bytes: &[u8]) -> Result<Option<usize>, DynError> {
-    let metadata_end = aligned_metadata_end(SECTION_COUNT)?;
-    let mut cursor =
-        usize::try_from(metadata_end).map_err(|_error| "metadata size should fit usize")?;
-
-    for kind in SectionKind::ALL {
-        let descriptor = descriptor(bytes, kind);
-        let offset =
-            usize::try_from(descriptor.offset).map_err(|_error| "offset should fit usize")?;
-        if cursor < offset {
-            return Ok(Some(cursor));
-        }
-
-        let size = usize::try_from(descriptor.size).map_err(|_error| "size should fit usize")?;
-        let end = offset
-            .checked_add(size)
-            .ok_or("section end should fit usize")?;
-        cursor = end;
-    }
-
-    Ok(None)
-}
-
-pub(super) fn first_fixed_section_with_gap(bytes: &[u8]) -> Result<Option<SectionKind>, DynError> {
-    for pair in SectionKind::ALL.windows(2) {
-        let [left, right] =
-            <&[SectionKind; 2]>::try_from(pair).map_err(|_error| "section pair should be valid")?;
-        if matches!(left, SectionKind::VocabOffsets | SectionKind::VocabBlob) {
-            continue;
-        }
-
-        let left_descriptor = descriptor(bytes, *left);
-        let left_end = left_descriptor
-            .offset
-            .checked_add(left_descriptor.size)
-            .ok_or("left section end should fit u64")?;
-        let right_start = descriptor(bytes, *right).offset;
-        if left_end < right_start {
-            return Ok(Some(*left));
-        }
-    }
-
-    Ok(None)
-}
-
-pub(super) fn rewrite_checksum(bytes: &mut [u8]) -> Result<(), DynError> {
-    let checksum = compute_checksum(bytes)?;
-    write_u64_at(bytes, CHECKSUM_OFFSET, checksum)
 }
 
 pub(super) fn run_async_test<F>(future: F) -> Result<(), DynError>
@@ -142,15 +63,25 @@ pub(super) async fn write_sample_file_with_settings(
     Ok(file_path)
 }
 
-pub(super) fn sample_chain() -> Result<MarkovChain, DynError> {
-    let mut chain = MarkovChain::default();
-    chain.train_tokens(&[
-        "a".to_owned(),
-        "b".to_owned(),
-        "c".to_owned(),
-        "d".to_owned(),
-    ])?;
-    chain.train_tokens(&["a".to_owned()])?;
+pub(super) fn sample_chain_with_order(ngram_order: usize) -> Result<MarkovChain, DynError> {
+    let mut chain = MarkovChain::new(ngram_order)?;
+    for tokens in [
+        vec!["a", "b", "c", "d"],
+        vec!["a", "b", "x"],
+        vec!["a"],
+        vec!["b", "c"],
+    ] {
+        chain.train_tokens(
+            &tokens
+                .into_iter()
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>(),
+        )?;
+    }
+    ensure(
+        chain.models.len() == ngram_order,
+        "model count should match ngram order",
+    )?;
     Ok(chain)
 }
 
@@ -160,6 +91,68 @@ pub(super) fn temp_file_path(prefix: &str) -> Result<TempPath, DynError> {
         .suffix(".mkv3")
         .tempfile()?;
     Ok(file.into_temp_path())
+}
+
+pub(super) fn descriptor(bytes: &[u8], index: usize) -> Result<DescriptorView, DynError> {
+    let base = descriptor_base(index)?;
+    Ok(DescriptorView {
+        kind: read_u32_at(bytes, base)?,
+        flags: read_u32_at(bytes, base + 4)?,
+        offset: read_u64_at(bytes, base + 8)?,
+        size: read_u64_at(bytes, base + 16)?,
+    })
+}
+
+pub(super) fn descriptor_count(bytes: &[u8]) -> Result<usize, DynError> {
+    let section_count = read_u64_at(bytes, SECTION_COUNT_OFFSET)?;
+    usize::try_from(section_count).map_err(|_error| "section count should fit usize".into())
+}
+
+pub(super) fn find_descriptor_index(
+    bytes: &[u8],
+    kind: SectionKind,
+    flags: u32,
+) -> Result<usize, DynError> {
+    let descriptor_count = descriptor_count(bytes)?;
+    for index in 0..descriptor_count {
+        let view = descriptor(bytes, index)?;
+        if view.kind == kind.as_u32() && view.flags == flags {
+            return Ok(index);
+        }
+    }
+
+    Err(format!("descriptor not found: {} flags={flags}", kind.label()).into())
+}
+
+pub(super) fn model_descriptor_index(bytes: &[u8], order: usize) -> Result<usize, DynError> {
+    let flags = u32::try_from(order).map_err(|_error| "order exceeds u32 range")?;
+    find_descriptor_index(bytes, SectionKind::Model, flags)
+}
+
+pub(super) fn section_body_offset(bytes: &[u8], index: usize) -> Result<usize, DynError> {
+    usize::try_from(descriptor(bytes, index)?.offset)
+        .map_err(|_error| "section offset should fit usize".into())
+}
+
+pub(super) fn descriptor_flags_offset(index: usize) -> Result<usize, DynError> {
+    let base = descriptor_base(index)?;
+    base.checked_add(4)
+        .ok_or_else(|| "descriptor flags offset overflow".into())
+}
+
+pub(super) fn descriptor_size_offset(index: usize) -> Result<usize, DynError> {
+    let base = descriptor_base(index)?;
+    base.checked_add(16)
+        .ok_or_else(|| "descriptor size offset overflow".into())
+}
+
+pub(super) fn rewrite_checksum(bytes: &mut [u8]) -> Result<(), DynError> {
+    let checksum = compute_checksum(bytes)?;
+    write_u64_at(bytes, CHECKSUM_OFFSET, checksum)
+}
+
+pub(super) fn expected_section_count(order: usize) -> Result<u64, DynError> {
+    descriptor_count_for_ngram_order(order)
 }
 
 pub(super) fn read_u32_at(bytes: &[u8], offset: usize) -> Result<u32, DynError> {
@@ -200,6 +193,22 @@ pub(super) fn write_u64_at(bytes: &mut [u8], offset: usize, value: u64) -> Resul
     Ok(())
 }
 
-fn descriptor_base(kind: SectionKind) -> usize {
-    HEADER_SIZE + kind.index() * DESCRIPTOR_SIZE
+fn descriptor_base(index: usize) -> Result<usize, DynError> {
+    let descriptor_count = HEADER_SIZE
+        .checked_add(
+            index
+                .checked_mul(DESCRIPTOR_SIZE)
+                .ok_or("descriptor base overflow")?,
+        )
+        .ok_or("descriptor base overflow")?;
+    Ok(descriptor_count)
+}
+
+#[test]
+fn section_count_formula_stays_dynamic() -> Result<(), DynError> {
+    ensure(
+        expected_section_count(7)? == SECTION_COUNT_BASE + 7,
+        "section count should be 3 + ngram_order",
+    )?;
+    Ok(())
 }

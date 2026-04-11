@@ -8,14 +8,9 @@ mod sampling;
 
 pub(crate) type TokenId = u32;
 pub(crate) type Count = u64;
+pub(crate) type Prefix = Vec<TokenId>;
 
-const MAX_NGRAM_ORDER: usize = 6;
-
-pub(crate) type Prefix6 = [TokenId; 6];
-pub(crate) type Prefix5 = [TokenId; 5];
-pub(crate) type Prefix4 = [TokenId; 4];
-pub(crate) type Prefix3 = [TokenId; 3];
-pub(crate) type Prefix2 = [TokenId; 2];
+pub(crate) const DEFAULT_NGRAM_ORDER: usize = 6;
 
 pub(crate) const BOS_TOKEN: &str = "<BOS>";
 pub(crate) const EOS_TOKEN: &str = "<EOS>";
@@ -23,6 +18,16 @@ pub(crate) const EOS_TOKEN: &str = "<EOS>";
 pub(crate) const BOS_ID: TokenId = 0;
 pub(crate) const EOS_ID: TokenId = 1;
 pub(crate) const DEFAULT_GENERATION_TEMPERATURE: f64 = 1.0;
+
+pub(crate) fn validate_ngram_order(ngram_order: usize, context: &str) -> Result<(), DynError> {
+    if ngram_order == 0 {
+        return Err(format!("{context} must be >= 1").into());
+    }
+
+    u32::try_from(ngram_order).map_err(|_error| format!("{context} must be <= {}", u32::MAX))?;
+
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GenerationOptions {
@@ -54,45 +59,37 @@ impl GenerationOptions {
 
 #[derive(Debug, Clone)]
 pub(crate) struct MarkovChain {
+    pub(crate) ngram_order: usize,
     pub(crate) token_to_id: HashMap<String, TokenId>,
     pub(crate) id_to_token: Vec<String>,
-    pub(crate) model6: HashMap<Prefix6, HashMap<TokenId, Count>>,
-    pub(crate) model5: HashMap<Prefix5, HashMap<TokenId, Count>>,
-    pub(crate) model4: HashMap<Prefix4, HashMap<TokenId, Count>>,
-    pub(crate) model3: HashMap<Prefix3, HashMap<TokenId, Count>>,
-    pub(crate) model2: HashMap<Prefix2, HashMap<TokenId, Count>>,
-    pub(crate) model1: HashMap<TokenId, HashMap<TokenId, Count>>,
-    pub(crate) starts: HashMap<Prefix6, Count>,
+    pub(crate) models: Vec<HashMap<Prefix, HashMap<TokenId, Count>>>,
+    pub(crate) starts: HashMap<Prefix, Count>,
 }
 
-impl Default for MarkovChain {
-    fn default() -> Self {
+impl MarkovChain {
+    pub(crate) fn new(ngram_order: usize) -> Result<Self, DynError> {
+        validate_ngram_order(ngram_order, "ngram_order")?;
+
         let mut token_to_id = HashMap::new();
         token_to_id.insert(BOS_TOKEN.to_owned(), BOS_ID);
         token_to_id.insert(EOS_TOKEN.to_owned(), EOS_ID);
 
-        Self {
+        Ok(Self {
+            ngram_order,
             token_to_id,
             id_to_token: vec![BOS_TOKEN.to_owned(), EOS_TOKEN.to_owned()],
-            model6: HashMap::new(),
-            model5: HashMap::new(),
-            model4: HashMap::new(),
-            model3: HashMap::new(),
-            model2: HashMap::new(),
-            model1: HashMap::new(),
+            models: (0..ngram_order).map(|_| HashMap::new()).collect(),
             starts: HashMap::new(),
-        }
+        })
     }
-}
 
-impl MarkovChain {
     pub(crate) fn train_tokens(&mut self, tokens: &[String]) -> Result<(), DynError> {
         if tokens.is_empty() {
             return Ok(());
         }
 
-        let mut sentence = Vec::with_capacity(tokens.len().saturating_add(MAX_NGRAM_ORDER + 1));
-        sentence.extend([BOS_ID; MAX_NGRAM_ORDER]);
+        let mut sentence = Vec::with_capacity(tokens.len().saturating_add(self.ngram_order + 1));
+        sentence.extend(std::iter::repeat_n(BOS_ID, self.ngram_order));
 
         for token in tokens {
             let token_id = self.intern_token(token)?;
@@ -101,31 +98,38 @@ impl MarkovChain {
 
         sentence.push(EOS_ID);
 
-        let start_slice = sentence
-            .get(1..=MAX_NGRAM_ORDER)
-            .ok_or("trained sentence is missing start prefix")?;
-        increment_count(
-            &mut self.starts,
-            copy_prefix::<6>(start_slice, "trained sentence start prefix")?,
-        );
+        let start_end = self
+            .ngram_order
+            .checked_add(1)
+            .ok_or("start prefix bound overflow")?;
+        let start_prefix = sentence
+            .get(1..start_end)
+            .ok_or("trained sentence is missing start prefix")?
+            .to_vec();
+        increment_count(&mut self.starts, start_prefix);
 
-        for window in sentence.windows(MAX_NGRAM_ORDER + 1) {
-            let [w1, w2, w3, w4, w5, w6, next] = <&[TokenId; 7]>::try_from(window)
-                .map_err(|_error| "training window must contain exactly seven tokens")?;
-            let prefix6 = [*w1, *w2, *w3, *w4, *w5, *w6];
-            let prefix5 = [*w2, *w3, *w4, *w5, *w6];
-            let prefix4 = [*w3, *w4, *w5, *w6];
-            let prefix3 = [*w4, *w5, *w6];
-            let prefix2 = [*w5, *w6];
-            let prefix1 = *w6;
-            let next = *next;
+        let window_size = self
+            .ngram_order
+            .checked_add(1)
+            .ok_or("training window size overflow")?;
 
-            increment_nested_count(&mut self.model6, prefix6, next);
-            increment_nested_count(&mut self.model5, prefix5, next);
-            increment_nested_count(&mut self.model4, prefix4, next);
-            increment_nested_count(&mut self.model3, prefix3, next);
-            increment_nested_count(&mut self.model2, prefix2, next);
-            increment_nested_count(&mut self.model1, prefix1, next);
+        for window in sentence.windows(window_size) {
+            let next = *window
+                .last()
+                .ok_or("training window is unexpectedly empty")?;
+
+            for order in 1..=self.ngram_order {
+                let prefix_start = self.ngram_order - order;
+                let prefix = window
+                    .get(prefix_start..self.ngram_order)
+                    .ok_or("training prefix range is invalid")?
+                    .to_vec();
+                let model = self
+                    .models
+                    .get_mut(order - 1)
+                    .ok_or("training model index is out of bounds")?;
+                increment_nested_count(model, prefix, next);
+            }
         }
 
         Ok(())
@@ -155,34 +159,39 @@ impl MarkovChain {
         let mut context = sampling::choose_weighted_prefix(&self.starts, rng, options.temperature)?;
         let mut generated = Vec::new();
 
-        self.seed_generated_tokens_from_context(context, options.max_words, &mut generated)?;
-        self.collect_generated_tokens(rng, options, &mut context, &mut generated)?;
+        self.seed_generated_tokens_from_context(
+            context.as_slice(),
+            options.max_words,
+            &mut generated,
+        )?;
+        self.collect_generated_tokens(rng, options, context.as_mut_slice(), &mut generated)?;
 
         (!generated.is_empty()).then_some(generated.join(""))
     }
 
     fn can_generate(&self, options: GenerationOptions) -> bool {
-        options.is_valid() && !self.starts.is_empty()
+        options.is_valid()
+            && !self.starts.is_empty()
+            && self.models.len() == self.ngram_order
+            && self.ngram_order > 0
     }
 
     fn collect_generated_tokens<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
         options: GenerationOptions,
-        context: &mut Prefix6,
+        context: &mut [TokenId],
         generated: &mut Vec<String>,
     ) -> Option<()> {
         while generated.len() < options.max_words {
             let allow_eos = generated.len() >= options.min_words_before_eos;
-            let next = self.choose_next_token(*context, rng, options.temperature, allow_eos);
+            let next = self.choose_next_token(context, rng, options.temperature, allow_eos);
 
             if next == EOS_ID {
                 break;
             }
 
-            *context = [
-                context[1], context[2], context[3], context[4], context[5], next,
-            ];
+            Self::advance_context(context, next)?;
             self.push_generated_token(generated, next)?;
         }
 
@@ -191,7 +200,7 @@ impl MarkovChain {
 
     fn seed_generated_tokens_from_context(
         &self,
-        context: Prefix6,
+        context: &[TokenId],
         max_words: usize,
         generated: &mut Vec<String>,
     ) -> Option<()> {
@@ -200,17 +209,28 @@ impl MarkovChain {
                 break;
             }
 
-            if token == BOS_ID {
+            if *token == BOS_ID {
                 continue;
             }
 
-            if token == EOS_ID {
+            if *token == EOS_ID {
                 break;
             }
 
-            self.push_generated_token(generated, token)?;
+            self.push_generated_token(generated, *token)?;
         }
 
+        Some(())
+    }
+
+    fn advance_context(context: &mut [TokenId], next: TokenId) -> Option<()> {
+        if context.is_empty() {
+            return None;
+        }
+
+        context.rotate_left(1);
+        let last = context.last_mut()?;
+        *last = next;
         Some(())
     }
 
@@ -243,7 +263,7 @@ impl MarkovChain {
 
     fn choose_next_token<R: Rng + ?Sized>(
         &self,
-        context: Prefix6,
+        context: &[TokenId],
         rng: &mut R,
         temperature: f64,
         allow_eos: bool,
@@ -262,49 +282,27 @@ impl MarkovChain {
 
     fn choose_with_backoff<R: Rng + ?Sized>(
         &self,
-        context: Prefix6,
+        context: &[TokenId],
         rng: &mut R,
         temperature: f64,
         allow_eos: bool,
     ) -> Option<TokenId> {
-        if let Some(edges) = self.model6.get(&context)
-            && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
-        {
-            return Some(next);
-        }
-
-        let suffix5 = [context[1], context[2], context[3], context[4], context[5]];
-        if let Some(edges) = self.model5.get(&suffix5)
-            && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
-        {
-            return Some(next);
-        }
-
-        let suffix4 = [context[2], context[3], context[4], context[5]];
-        if let Some(edges) = self.model4.get(&suffix4)
-            && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
-        {
-            return Some(next);
-        }
-
-        let suffix3 = [context[3], context[4], context[5]];
-        if let Some(edges) = self.model3.get(&suffix3)
-            && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
-        {
-            return Some(next);
-        }
-
-        let suffix2 = [context[4], context[5]];
-        if let Some(edges) = self.model2.get(&suffix2)
-            && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
-        {
-            return Some(next);
-        }
-
-        if let Some(edges) = self.model1.get(&context[5])
-            && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
-        {
-            return Some(next);
+        for order in (1..=self.ngram_order).rev() {
+            let Some(prefix_start) = context.len().checked_sub(order) else {
+                continue;
+            };
+            let Some(prefix) = context.get(prefix_start..) else {
+                continue;
+            };
+            let Some(model) = self.models.get(order - 1) else {
+                continue;
+            };
+            if let Some(edges) = model.get(prefix)
+                && let Some(next) =
+                    sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
+            {
+                return Some(next);
+            }
         }
 
         None
@@ -317,7 +315,7 @@ impl MarkovChain {
     ) -> Option<TokenId> {
         let mut totals = HashMap::<TokenId, Count>::new();
 
-        for edges in self.model1.values() {
+        for edges in self.models.first()?.values() {
             for (token, count) in edges {
                 if *token == EOS_ID || *count == 0 {
                     continue;
@@ -351,12 +349,6 @@ fn increment_nested_count<K>(
     increment_count(candidates, next);
 }
 
-fn copy_prefix<const N: usize>(slice: &[TokenId], context: &str) -> Result<[TokenId; N], DynError> {
-    <&[TokenId; N]>::try_from(slice)
-        .copied()
-        .map_err(|_error| format!("{context} must contain exactly {N} tokens").into())
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -365,11 +357,13 @@ mod tests {
     use crate::test_support::{ensure, ensure_eq};
     use rand::{SeedableRng, rngs::StdRng};
 
-    use super::{BOS_ID, EOS_ID, GenerationOptions, MarkovChain};
+    use super::{
+        BOS_ID, Count, DEFAULT_NGRAM_ORDER, EOS_ID, GenerationOptions, MarkovChain, Prefix, TokenId,
+    };
 
     #[test]
     fn trains_and_generates_sentence_without_spaces() -> Result<(), DynError> {
-        let mut chain = MarkovChain::default();
+        let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
         chain.train_tokens(&tokens(["今日", "は", "良い", "天気", "です", "ね"]))?;
         chain.train_tokens(&tokens(["今日", "は", "少し", "寒い", "です", "ね"]))?;
 
@@ -395,7 +389,7 @@ mod tests {
 
     #[test]
     fn learns_single_token_sentence() -> Result<(), DynError> {
-        let mut chain = MarkovChain::default();
+        let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
         chain.train_tokens(&tokens(["草"]))?;
 
         let mut rng = StdRng::seed_from_u64(1);
@@ -413,7 +407,7 @@ mod tests {
 
     #[test]
     fn ignores_empty_tokens() -> Result<(), DynError> {
-        let mut chain = MarkovChain::default();
+        let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
         chain.train_tokens(&[])?;
 
         ensure(
@@ -425,7 +419,7 @@ mod tests {
 
     #[test]
     fn temperature_changes_sampling_bias() -> Result<(), DynError> {
-        let mut chain = MarkovChain::default();
+        let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
 
         for _ in 0..120 {
             chain.train_tokens(&tokens(["a"]))?;
@@ -453,7 +447,7 @@ mod tests {
 
     #[test]
     fn eos_can_be_deferred_until_min_words() -> Result<(), DynError> {
-        let mut chain = MarkovChain::default();
+        let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
         chain.train_tokens(&tokens(["x"]))?;
 
         let mut rng = StdRng::seed_from_u64(99);
@@ -470,7 +464,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_generation_options() -> Result<(), DynError> {
-        let mut chain = MarkovChain::default();
+        let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
         chain.train_tokens(&tokens(["x"]))?;
 
         let mut rng = StdRng::seed_from_u64(13);
@@ -486,24 +480,23 @@ mod tests {
 
     #[test]
     fn stores_start_prefix_using_first_token() -> Result<(), DynError> {
-        let mut chain = MarkovChain::default();
+        let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
         chain.train_tokens(&tokens(["a", "b"]))?;
 
         let Some(a_id) = chain.token_to_id.get("a").copied() else {
             return Err("token id for 'a' should exist".into());
         };
 
+        let expected_prefix = [vec![BOS_ID; DEFAULT_NGRAM_ORDER - 1], vec![a_id]].concat();
         ensure_eq(
-            &chain
-                .starts
-                .get(&[BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, a_id]),
+            &chain.starts.get(&expected_prefix),
             &Some(&1),
             "start prefix should use the first generated token",
         )?;
         ensure(
             !chain
                 .starts
-                .contains_key(&[BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID]),
+                .contains_key(&vec![BOS_ID; DEFAULT_NGRAM_ORDER]),
             "pure BOS prefix must not be stored as a start",
         )?;
         Ok(())
@@ -511,32 +504,24 @@ mod tests {
 
     #[test]
     fn emits_seeded_start_token_before_first_transition() -> Result<(), DynError> {
-        let mut chain = MarkovChain::default();
+        let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
 
-        chain.token_to_id.insert("a".to_owned(), 2);
-        chain.id_to_token.push("a".to_owned());
+        add_token(&mut chain, 2, "a");
 
-        chain
-            .starts
-            .insert([BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, 2], 1);
-        chain.model6.insert(
-            [BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, 2],
-            HashMap::from([(EOS_ID, 1)]),
-        );
-        chain.model5.insert(
-            [BOS_ID, BOS_ID, BOS_ID, BOS_ID, 2],
-            HashMap::from([(EOS_ID, 1)]),
-        );
-        chain
-            .model4
-            .insert([BOS_ID, BOS_ID, BOS_ID, 2], HashMap::from([(EOS_ID, 1)]));
-        chain
-            .model3
-            .insert([BOS_ID, BOS_ID, 2], HashMap::from([(EOS_ID, 1)]));
-        chain
-            .model2
-            .insert([BOS_ID, 2], HashMap::from([(EOS_ID, 1)]));
-        chain.model1.insert(2, HashMap::from([(EOS_ID, 1)]));
+        let start = [vec![BOS_ID; DEFAULT_NGRAM_ORDER - 1], vec![2]].concat();
+        chain.starts.insert(start.clone(), 1);
+
+        for order in 1..=DEFAULT_NGRAM_ORDER {
+            let prefix_start = start
+                .len()
+                .checked_sub(order)
+                .ok_or("seed prefix start underflow")?;
+            let prefix = start
+                .get(prefix_start..)
+                .ok_or("seed prefix slice is invalid")?
+                .to_vec();
+            insert_model(&mut chain, order, prefix, HashMap::from([(EOS_ID, 1)]))?;
+        }
 
         let mut rng = StdRng::seed_from_u64(123);
         let sentence =
@@ -551,41 +536,164 @@ mod tests {
     }
 
     #[test]
-    fn backoff_walks_all_levels_from_six_to_one() -> Result<(), DynError> {
-        let mut chain = MarkovChain::default();
+    fn backoff_walks_all_levels_from_seven_to_one() -> Result<(), DynError> {
+        let mut chain = MarkovChain::new(7)?;
 
-        for (token_id, token) in [(2, "a"), (3, "b"), (4, "c"), (5, "d"), (6, "e"), (7, "f")] {
-            chain.token_to_id.insert(token.to_owned(), token_id);
-            chain.id_to_token.push(token.to_owned());
+        for (token_id, token) in [
+            (2, "a"),
+            (3, "b"),
+            (4, "c"),
+            (5, "d"),
+            (6, "e"),
+            (7, "f"),
+            (8, "g"),
+        ] {
+            add_token(&mut chain, token_id, token);
         }
 
-        chain
-            .starts
-            .insert([BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, 2], 1);
-        chain.model6.insert(
-            [BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, 2],
-            HashMap::from([(3, 1)]),
-        );
-        chain
-            .model5
-            .insert([BOS_ID, BOS_ID, BOS_ID, 2, 3], HashMap::from([(4, 1)]));
-        chain
-            .model4
-            .insert([BOS_ID, 2, 3, 4], HashMap::from([(5, 1)]));
-        chain.model3.insert([3, 4, 5], HashMap::from([(6, 1)]));
-        chain.model2.insert([5, 6], HashMap::from([(7, 1)]));
-        chain.model1.insert(7, HashMap::from([(EOS_ID, 1)]));
+        let start = vec![BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, 2];
+        chain.starts.insert(start.clone(), 1);
+        insert_model(&mut chain, 7, start, HashMap::from([(3, 1)]))?;
+        insert_model(
+            &mut chain,
+            6,
+            vec![BOS_ID, BOS_ID, BOS_ID, BOS_ID, 2, 3],
+            HashMap::from([(4, 1)]),
+        )?;
+        insert_model(
+            &mut chain,
+            5,
+            vec![BOS_ID, BOS_ID, 2, 3, 4],
+            HashMap::from([(5, 1)]),
+        )?;
+        insert_model(&mut chain, 4, vec![2, 3, 4, 5], HashMap::from([(6, 1)]))?;
+        insert_model(&mut chain, 3, vec![4, 5, 6], HashMap::from([(7, 1)]))?;
+        insert_model(&mut chain, 2, vec![6, 7], HashMap::from([(8, 1)]))?;
+        insert_model(&mut chain, 1, vec![8], HashMap::from([(EOS_ID, 1)]))?;
 
         let mut rng = StdRng::seed_from_u64(321);
+        let sentence =
+            chain.generate_sentence_with_options(&mut rng, GenerationOptions::new(7, 1.0, 0));
+
+        ensure_eq(
+            &sentence,
+            &Some("abcdefg".to_owned()),
+            "generation should fall back from model7 down to model1 in order",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn trains_only_up_to_configured_ngram_order() -> Result<(), DynError> {
+        let mut chain = MarkovChain::new(3)?;
+        chain.train_tokens(&tokens(["a", "b", "c", "d"]))?;
+
+        ensure(chain.models.len() == 3, "model count should match order")?;
+        ensure(
+            !model(&chain, 3)?.is_empty(),
+            "model3 should be trained for order=3",
+        )?;
+        ensure(
+            !model(&chain, 2)?.is_empty(),
+            "model2 should be trained for order=3",
+        )?;
+        ensure(
+            !model(&chain, 1)?.is_empty(),
+            "model1 should be trained for order=3",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn trains_requested_model_count_for_order_seven() -> Result<(), DynError> {
+        let mut chain = MarkovChain::new(7)?;
+        chain.train_tokens(&tokens(["a", "b", "c", "d", "e", "f", "g"]))?;
+
+        ensure(chain.models.len() == 7, "model count should match order=7")?;
+        ensure(
+            chain.models.iter().all(|model| !model.is_empty()),
+            "all models up to order=7 should be populated",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn start_seed_uses_configured_prefix() -> Result<(), DynError> {
+        let mut chain = MarkovChain::new(2)?;
+
+        for (token_id, token) in [(2, "a"), (3, "b"), (4, "c")] {
+            add_token(&mut chain, token_id, token);
+        }
+
+        chain.starts.insert(vec![3, 4], 1);
+        insert_model(&mut chain, 2, vec![3, 4], HashMap::from([(EOS_ID, 1)]))?;
+        insert_model(&mut chain, 1, vec![4], HashMap::from([(EOS_ID, 1)]))?;
+
+        let mut rng = StdRng::seed_from_u64(17);
+        let sentence =
+            chain.generate_sentence_with_options(&mut rng, GenerationOptions::new(5, 1.0, 0));
+
+        ensure_eq(
+            &sentence,
+            &Some("bc".to_owned()),
+            "start seeding should emit the configured prefix",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn backoff_starts_from_configured_ngram_order() -> Result<(), DynError> {
+        let mut chain = MarkovChain::new(3)?;
+
+        for (token_id, token) in [(2, "a"), (3, "b"), (4, "c")] {
+            add_token(&mut chain, token_id, token);
+        }
+
+        let start = vec![BOS_ID, BOS_ID, 2];
+        chain.starts.insert(start.clone(), 1);
+        insert_model(&mut chain, 3, start, HashMap::from([(3, 1)]))?;
+        insert_model(&mut chain, 2, vec![2, 3], HashMap::from([(4, 1)]))?;
+        insert_model(&mut chain, 1, vec![4], HashMap::from([(EOS_ID, 1)]))?;
+
+        let mut rng = StdRng::seed_from_u64(27);
         let sentence =
             chain.generate_sentence_with_options(&mut rng, GenerationOptions::new(6, 1.0, 0));
 
         ensure_eq(
             &sentence,
-            &Some("abcdef".to_owned()),
-            "generation should fall back from model6 down to model1 in order",
+            &Some("abc".to_owned()),
+            "generation should back off only from the configured order down to model1",
         )?;
         Ok(())
+    }
+
+    fn add_token(chain: &mut MarkovChain, token_id: u32, token: &str) {
+        chain.token_to_id.insert(token.to_owned(), token_id);
+        chain.id_to_token.push(token.to_owned());
+    }
+
+    fn insert_model(
+        chain: &mut MarkovChain,
+        order: usize,
+        prefix: Prefix,
+        edges: HashMap<TokenId, Count>,
+    ) -> Result<(), DynError> {
+        let model = chain
+            .models
+            .get_mut(order.saturating_sub(1))
+            .ok_or_else(|| format!("model{order} should exist"))?;
+        model.insert(prefix, edges);
+        Ok(())
+    }
+
+    fn model(
+        chain: &MarkovChain,
+        order: usize,
+    ) -> Result<&HashMap<Prefix, HashMap<TokenId, Count>>, DynError> {
+        chain
+            .models
+            .get(order.saturating_sub(1))
+            .ok_or_else(|| format!("model{order} should exist").into())
     }
 
     fn sample_b_frequency(

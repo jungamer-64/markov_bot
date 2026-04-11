@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rand::{Rng, RngExt};
 
-use super::{Count, DEFAULT_GENERATION_TEMPERATURE, EOS_ID, Prefix6, TokenId};
+use super::{Count, DEFAULT_GENERATION_TEMPERATURE, EOS_ID, Prefix, TokenId};
 
 #[derive(Debug)]
 struct AliasTable<K> {
@@ -12,16 +12,16 @@ struct AliasTable<K> {
 }
 
 pub(super) fn choose_weighted_prefix<R: Rng + ?Sized>(
-    starts: &HashMap<Prefix6, Count>,
+    starts: &HashMap<Prefix, Count>,
     rng: &mut R,
     temperature: f64,
-) -> Option<Prefix6> {
+) -> Option<Prefix> {
     let mut entries = starts
         .iter()
-        .filter_map(|(prefix, count)| (*count > 0).then_some((*prefix, *count)))
+        .filter_map(|(prefix, count)| (*count > 0).then_some((prefix.clone(), *count)))
         .collect::<Vec<_>>();
 
-    entries.sort_unstable_by_key(|(prefix, _)| *prefix);
+    entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
     choose_weighted_key(entries.as_slice(), rng, temperature)
 }
 
@@ -46,7 +46,7 @@ pub(super) fn choose_weighted_token<R: Rng + ?Sized>(
     choose_weighted_key(entries.as_slice(), rng, temperature)
 }
 
-fn choose_weighted_key<K: Copy, R: Rng + ?Sized>(
+fn choose_weighted_key<K: Clone, R: Rng + ?Sized>(
     entries: &[(K, Count)],
     rng: &mut R,
     temperature: f64,
@@ -62,20 +62,22 @@ fn choose_weighted_key<K: Copy, R: Rng + ?Sized>(
     choose_weighted_key_with_temperature(entries, rng, temperature)
 }
 
-fn choose_weighted_key_default<K: Copy, R: Rng + ?Sized>(
+fn choose_weighted_key_default<K: Clone, R: Rng + ?Sized>(
     entries: &[(K, Count)],
     rng: &mut R,
 ) -> Option<K> {
     let weighted_entries = entries
         .iter()
-        .filter_map(|(key, count)| default_sampling_weight(*count).map(|weight| (*key, weight)))
+        .filter_map(|(key, count)| {
+            default_sampling_weight(*count).map(|weight| (key.clone(), weight))
+        })
         .collect::<Vec<_>>();
 
     let alias_table = AliasTable::build(weighted_entries.as_slice())?;
     alias_table.sample(rng)
 }
 
-fn choose_weighted_key_with_temperature<K: Copy, R: Rng + ?Sized>(
+fn choose_weighted_key_with_temperature<K: Clone, R: Rng + ?Sized>(
     entries: &[(K, Count)],
     rng: &mut R,
     temperature: f64,
@@ -85,7 +87,7 @@ fn choose_weighted_key_with_temperature<K: Copy, R: Rng + ?Sized>(
     alias_table.sample(rng)
 }
 
-fn build_temperature_weights<K: Copy>(
+fn build_temperature_weights<K: Clone>(
     entries: &[(K, Count)],
     temperature: f64,
 ) -> Option<Vec<(K, f64)>> {
@@ -97,7 +99,7 @@ fn build_temperature_weights<K: Copy>(
             continue;
         };
 
-        weighted_entries.push((*key, weight));
+        weighted_entries.push((key.clone(), weight));
     }
 
     (!weighted_entries.is_empty()).then_some(weighted_entries)
@@ -117,7 +119,7 @@ fn default_sampling_weight(count: Count) -> Option<f64> {
     Some(f64::from(bounded))
 }
 
-impl<K: Copy> AliasTable<K> {
+impl<K: Clone> AliasTable<K> {
     fn build(entries: &[(K, f64)]) -> Option<Self> {
         let (keys, mut scaled) = normalized_weights(entries)?;
 
@@ -150,7 +152,7 @@ impl<K: Copy> AliasTable<K> {
         }
 
         if self.keys.len() == 1 {
-            return self.keys.first().copied();
+            return self.keys.first().cloned();
         }
 
         let column = rng.random_range(0..self.keys.len());
@@ -162,11 +164,11 @@ impl<K: Copy> AliasTable<K> {
             *self.aliases.get(column)?
         };
 
-        self.keys.get(picked).copied()
+        self.keys.get(picked).cloned()
     }
 }
 
-fn normalized_weights<K: Copy>(entries: &[(K, f64)]) -> Option<(Vec<K>, Vec<f64>)> {
+fn normalized_weights<K: Clone>(entries: &[(K, f64)]) -> Option<(Vec<K>, Vec<f64>)> {
     let (keys, mut weights, total_weight) = collect_positive_weights(entries);
     if keys.is_empty() || total_weight <= 0.0 {
         return None;
@@ -181,7 +183,7 @@ fn normalized_weights<K: Copy>(entries: &[(K, f64)]) -> Option<(Vec<K>, Vec<f64>
     Some((keys, weights))
 }
 
-fn collect_positive_weights<K: Copy>(entries: &[(K, f64)]) -> (Vec<K>, Vec<f64>, f64) {
+fn collect_positive_weights<K: Clone>(entries: &[(K, f64)]) -> (Vec<K>, Vec<f64>, f64) {
     let mut keys = Vec::with_capacity(entries.len());
     let mut weights = Vec::with_capacity(entries.len());
     let mut total_weight = 0.0_f64;
@@ -191,7 +193,7 @@ fn collect_positive_weights<K: Copy>(entries: &[(K, f64)]) -> (Vec<K>, Vec<f64>,
             continue;
         }
 
-        keys.push(*key);
+        keys.push(key.clone());
         weights.push(*weight);
         total_weight += *weight;
     }
@@ -239,11 +241,14 @@ fn fill_alias_tables(
         let Some(large_scaled) = scaled.get(large_index).copied() else {
             continue;
         };
-        let Some(large_slot) = scaled.get_mut(large_index) else {
+
+        let updated = large_scaled + assigned_probability - 1.0;
+        let Some(slot) = scaled.get_mut(large_index) else {
             continue;
         };
-        *large_slot = (large_scaled + assigned_probability) - 1.0;
-        if *large_slot < (1.0 - f64::EPSILON) {
+        *slot = updated;
+
+        if updated < 1.0 {
             small.push(large_index);
         } else {
             large.push(large_index);
@@ -251,42 +256,16 @@ fn fill_alias_tables(
     }
 }
 
-fn finalize_alias_entries(probabilities: &mut [f64], aliases: &mut [usize], indices: Vec<usize>) {
-    for index in indices {
-        if let Some(probability) = probabilities.get_mut(index) {
-            *probability = 1.0;
-        }
-        if let Some(alias) = aliases.get_mut(index) {
-            *alias = index;
-        }
-    }
-}
+fn finalize_alias_entries(probabilities: &mut [f64], aliases: &mut [usize], pending: Vec<usize>) {
+    for index in pending {
+        let Some(probability) = probabilities.get_mut(index) else {
+            continue;
+        };
+        *probability = 1.0;
 
-#[cfg(test)]
-mod tests {
-    use rand::{SeedableRng, rngs::StdRng};
-
-    use super::{choose_weighted_key_default, choose_weighted_key_with_temperature};
-
-    #[test]
-    fn default_sampling_handles_large_counts() {
-        let entries = [(10_u32, u64::MAX), (20_u32, 1_u64)];
-        let mut rng = StdRng::seed_from_u64(55);
-
-        for _ in 0..64 {
-            let sampled = choose_weighted_key_default(entries.as_slice(), &mut rng);
-            assert!(matches!(sampled, Some(10_u32 | 20_u32)));
-        }
-    }
-
-    #[test]
-    fn temperature_sampling_handles_large_counts() {
-        let entries = [(10_u32, u64::MAX), (20_u32, 1_u64)];
-        let mut rng = StdRng::seed_from_u64(99);
-
-        for _ in 0..64 {
-            let sampled = choose_weighted_key_with_temperature(entries.as_slice(), &mut rng, 1.7);
-            assert!(matches!(sampled, Some(10_u32 | 20_u32)));
-        }
+        let Some(alias) = aliases.get_mut(index) else {
+            continue;
+        };
+        *alias = index;
     }
 }

@@ -4,7 +4,7 @@ use tokio::fs;
 
 use crate::{
     config::DynError,
-    markov::{BOS_TOKEN, Count, EOS_TOKEN, MarkovChain, TokenId},
+    markov::{BOS_TOKEN, Count, EOS_TOKEN, MarkovChain, validate_ngram_order},
 };
 
 mod read;
@@ -14,16 +14,8 @@ mod write;
 #[cfg(test)]
 mod tests;
 
-use types::{
-    EdgeRecord, FixedRecord, Header, Model1Sections, Model2Sections, Model3Sections,
-    Model4Sections, Model5Sections, Model6PrefixIndex, Model6Sections, Pair2Record, Pair3Record,
-    Pair4Record, Pair5Record, Pair6Record, Prefix1Record, Prefix2Record, Prefix3Record,
-    Prefix4Record, Prefix5Record, Prefix6Record, SectionDescriptor, SectionEntry, SectionKind,
-    SectionTable, StartRecord, StorageSections, VocabSections,
-};
-
 const MAGIC: [u8; 8] = *b"MKV3BIN\0";
-const VERSION: u32 = 6;
+const VERSION: u32 = 8;
 const FLAGS: u32 = 0;
 const FLAG_VOCAB_BLOB_RLE: u32 = 1 << 0;
 const FLAG_VOCAB_BLOB_ZSTD: u32 = 1 << 1;
@@ -33,29 +25,17 @@ const TOKENIZER_VERSION: u32 = 1;
 const NORMALIZATION_FLAGS: u32 = 0;
 const CHECKSUM_PLACEHOLDER: u64 = 0;
 
-const HEADER_SIZE: usize = 44;
+const HEADER_SIZE: usize = 52;
 const DESCRIPTOR_SIZE: usize = 24;
-const SECTION_COUNT: usize = 20;
-const SECTION_COUNT_U32: u32 = 20;
 const CHECKSUM_SIZE: usize = std::mem::size_of::<u64>();
 const CHECKSUM_OFFSET: usize = HEADER_SIZE - CHECKSUM_SIZE;
+const SECTION_COUNT_BASE: u64 = 3;
+const START_SECTION_HEADER_SIZE: u64 = 4;
+const MODEL_SECTION_HEADER_SIZE: u64 = 8;
+const EDGE_RECORD_SIZE: u64 = 12;
 
 const FNV1A64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-const START_RECORD_SIZE: u64 = 12;
-const PAIR6_RECORD_SIZE: u64 = 28;
-const PAIR5_RECORD_SIZE: u64 = 24;
-const PAIR4_RECORD_SIZE: u64 = 20;
-const PAIR3_RECORD_SIZE: u64 = 16;
-const PAIR2_RECORD_SIZE: u64 = 12;
-const PREFIX6_RECORD_SIZE: u64 = 20;
-const PREFIX5_RECORD_SIZE: u64 = 20;
-const PREFIX4_RECORD_SIZE: u64 = 20;
-const PREFIX3_RECORD_SIZE: u64 = 20;
-const EDGE_RECORD_SIZE: u64 = 12;
-const PREFIX2_RECORD_SIZE: u64 = 24;
-const PREFIX1_RECORD_SIZE: u64 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StorageCompressionMode {
@@ -92,14 +72,21 @@ impl StorageCompressionMode {
     }
 }
 
-pub(crate) async fn load_chain(path: &Path) -> Result<MarkovChain, DynError> {
+pub(crate) async fn load_chain(
+    path: &Path,
+    expected_ngram_order: usize,
+) -> Result<MarkovChain, DynError> {
+    validate_ngram_order(expected_ngram_order, "expected_ngram_order")?;
+
     let bytes = match fs::read(path).await {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(MarkovChain::default()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return MarkovChain::new(expected_ngram_order);
+        }
         Err(error) => return Err(error.into()),
     };
 
-    read::decode_chain(bytes.as_slice())
+    read::decode_chain(bytes.as_slice(), expected_ngram_order)
 }
 
 pub(crate) async fn save_chain(
@@ -115,7 +102,7 @@ pub(crate) async fn save_chain(
     let sections = write::compile_chain(chain, min_edge_count)?;
     let payload = write::encode_storage(&sections, compression_mode)?;
 
-    read::decode_chain(payload.as_slice())?;
+    read::decode_chain(payload.as_slice(), chain.ngram_order)?;
 
     fs::write(path, payload).await?;
 
@@ -140,12 +127,42 @@ fn validate_special_tokens(tokens: &[String]) -> Result<(), DynError> {
     Ok(())
 }
 
+fn validate_token_index(chain: &MarkovChain) -> Result<(), DynError> {
+    if chain.token_to_id.len() != chain.id_to_token.len() {
+        return Err("token index size mismatch".into());
+    }
+
+    for (index, token) in chain.id_to_token.iter().enumerate() {
+        let expected_id = u32_from_usize(index, "token index")?;
+        let actual_id = chain
+            .token_to_id
+            .get(token)
+            .copied()
+            .ok_or_else(|| format!("token_to_id is missing '{token}'"))?;
+        if actual_id != expected_id {
+            return Err(format!(
+                "token_to_id mismatch for '{token}': expected {expected_id}, got {actual_id}"
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
 fn validate_token_id(token_id: u32, token_count: u32, context: &str) -> Result<(), DynError> {
     if token_id >= token_count {
         return Err(format!("{context}: token id {token_id} is out of range").into());
     }
 
     Ok(())
+}
+
+fn descriptor_count_for_ngram_order(ngram_order: usize) -> Result<u64, DynError> {
+    let ngram_order = u64_from_usize(ngram_order, "ngram order")?;
+    SECTION_COUNT_BASE
+        .checked_add(ngram_order)
+        .ok_or_else(|| "section count overflow".into())
 }
 
 fn bytes_for_len(len: usize, element_size: u64, context: &str) -> Result<u64, DynError> {
@@ -179,11 +196,12 @@ fn u64_from_usize(value: usize, context: &str) -> Result<u64, DynError> {
     u64::try_from(value).map_err(|_error| format!("{context} exceeds u64 range").into())
 }
 
-fn aligned_metadata_end(section_count: usize) -> Result<u64, DynError> {
+fn aligned_metadata_end(section_count: u64) -> Result<u64, DynError> {
     let header_size = u64_from_usize(HEADER_SIZE, "header size")?;
     let descriptor_size = u64_from_usize(DESCRIPTOR_SIZE, "section descriptor size")?;
-    let descriptor_bytes =
-        bytes_for_len(section_count, descriptor_size, "section descriptor table")?;
+    let descriptor_bytes = section_count
+        .checked_mul(descriptor_size)
+        .ok_or("section descriptor table byte size overflow")?;
     Ok(align_to_eight(checked_add(
         header_size,
         descriptor_bytes,
@@ -191,8 +209,16 @@ fn aligned_metadata_end(section_count: usize) -> Result<u64, DynError> {
     )?))
 }
 
-fn fixed_section_bytes<T: FixedRecord>(records: &[T], context: &str) -> Result<u64, DynError> {
-    bytes_for_len(records.len(), T::SIZE, context)
+fn start_record_size(order: usize) -> Result<u64, DynError> {
+    let prefix_bytes = bytes_for_len(order, 4, "start record prefix")?;
+    checked_add(prefix_bytes, 8, "start record size")
+}
+
+fn model_record_size(order: usize) -> Result<u64, DynError> {
+    let prefix_bytes = bytes_for_len(order, 4, "model record prefix")?;
+    let with_edges = checked_add(prefix_bytes, 4, "model record edge_start size")?;
+    let with_len = checked_add(with_edges, 4, "model record edge_len size")?;
+    checked_add(with_len, 8, "model record total size")
 }
 
 fn compute_checksum(bytes: &[u8]) -> Result<u64, DynError> {
@@ -221,6 +247,11 @@ fn vocab_blob_compression_flags(flags: u32) -> Result<u32, DynError> {
     let compression_flags = flags & SUPPORTED_FLAGS;
     if compression_flags.count_ones() > 1 {
         return Err("multiple vocab blob compression flags are set".into());
+    }
+
+    let unsupported = flags & !SUPPORTED_FLAGS;
+    if unsupported != 0 {
+        return Err(format!("unsupported storage flags: 0x{unsupported:08x}").into());
     }
 
     Ok(compression_flags)

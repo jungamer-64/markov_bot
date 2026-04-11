@@ -46,7 +46,7 @@ impl DiscordHandler {
         config: BotConfig,
         current_user_id: Id<UserMarker>,
     ) -> Result<Self, DynError> {
-        let chain = load_chain(&config.data_path).await?;
+        let chain = load_chain(&config.data_path, config.ngram_order).await?;
 
         Ok(Self {
             config,
@@ -179,4 +179,88 @@ fn should_ignore_author(
 
 fn can_reply(last_reply_at: Option<Instant>, cooldown: Duration) -> bool {
     last_reply_at.is_none_or(|last| last.elapsed() >= cooldown)
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+    use twilight_model::id::Id;
+
+    use crate::{
+        config::BotConfig,
+        markov::MarkovChain,
+        storage::{StorageCompressionMode, save_chain},
+    };
+
+    use super::DiscordHandler;
+
+    fn run_async_test<F>(future: F) -> Result<(), crate::config::DynError>
+    where
+        F: std::future::Future<Output = Result<(), crate::config::DynError>>,
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(future)
+    }
+
+    #[test]
+    fn new_loads_saved_chain_with_matching_ngram_order() -> Result<(), crate::config::DynError> {
+        run_async_test(async {
+            let temp_dir = tempdir()?;
+            let data_path = temp_dir.path().join("chain.mkv3");
+            let mut chain = MarkovChain::new(7)?;
+            chain.train_tokens(&["a".to_owned(), "b".to_owned(), "c".to_owned()])?;
+            save_chain(&data_path, &chain, 1, StorageCompressionMode::Auto).await?;
+
+            let config = BotConfig {
+                discord_token: "token".to_owned(),
+                data_path,
+                ngram_order: 7,
+                storage_min_edge_count: 1,
+                storage_compression: StorageCompressionMode::Auto,
+                max_words: 20,
+                generation_temperature: 1.0,
+                min_words_before_eos: 0,
+                reply_cooldown_secs: 5,
+            };
+
+            let result = DiscordHandler::new(config, Id::new(1)).await;
+            crate::test_support::ensure(
+                result.is_ok(),
+                "DiscordHandler::new should load matching order=7 data",
+            )?;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn new_rejects_saved_ngram_order_mismatch() -> Result<(), crate::config::DynError> {
+        run_async_test(async {
+            let temp_dir = tempdir()?;
+            let data_path = temp_dir.path().join("chain.mkv3");
+            let mut chain = MarkovChain::new(6)?;
+            chain.train_tokens(&["a".to_owned()])?;
+            save_chain(&data_path, &chain, 1, StorageCompressionMode::Auto).await?;
+
+            let config = BotConfig {
+                discord_token: "token".to_owned(),
+                data_path,
+                ngram_order: 3,
+                storage_min_edge_count: 1,
+                storage_compression: StorageCompressionMode::Auto,
+                max_words: 20,
+                generation_temperature: 1.0,
+                min_words_before_eos: 0,
+                reply_cooldown_secs: 5,
+            };
+
+            let result = DiscordHandler::new(config, Id::new(1)).await;
+            crate::test_support::ensure(
+                result.is_err(),
+                "DiscordHandler::new should fail when saved ngram order differs from config",
+            )?;
+            Ok(())
+        })
+    }
 }
