@@ -1,46 +1,26 @@
-# Discord Markov Bot 保存フォーマット仕様 v8
+# `.mkv3` 保存形式仕様 v8
+
+この文書は `markov-storage` crate が読み書きする v8 `.mkv3` の単一正本です。対象は binary layout と validation ルールであり、bot の運用手順や CLI 利用法は扱いません。
 
 ## 概要
 
-`.mkv3` は学習済み `MarkovChain` を保存するための custom binary format である。  
-v8 では固定 6 次前提を廃止し、`MARKOV_NGRAM_ORDER >= 1` を runtime 指定できる形へ全面抽象化した。
+v8 の要点は次のとおりです。
 
-v8 の要点は次のとおり。
-
-- `ngram_order` は header に保存し、reader は runtime 設定と一致しないファイルを拒否する
+- `ngram_order` を header に保存し、reader は runtime 設定と一致しないファイルを拒否する
 - model は `order = ngram_order .. 1` の可変個数 section として保存する
-- `Starts` は固定 6-token 参照ではなく、`ngram_order` 長の prefix を直接保存する
-- v7 以前との互換性は持たない。reader は v8 のみ受理する
+- `Starts` は固定長 prefix 参照ではなく、`ngram_order` 長の prefix 自体を保存する
+- reader が受理する storage version は v8 のみで、v7 以前とは互換性を持たない
 
-## 実装配置
+## ファイル全体構造
 
-- bot 本体は root package `markov_bot` の binary のみを持つ
-- `markov-core` crate が `MarkovChain` と生成・学習ロジックを持つ
-- `markov-storage` crate が v8 の encode/decode と JSON 用 `StorageSnapshot` を持つ
-- `markov-storage-cli` package が `markov-storage` バイナリを提供し、`inspect` / `export` / `import` / `migrate` を実装する
-- v6 reader は `markov-storage-cli` の private module に閉じ込め、本体と `markov-storage` crate は過去 version を知らない
-
-## CLI
-
-`markov-storage` は次のサブコマンドを持つ。
-
-- `inspect --input <path>`: v6 / v8 を自動判別して summary を表示する
-- `export --input <path> --output <path>`: v6 / v8 を canonical JSON snapshot へ書き出す
-- `import --input <json> --output <path>`: JSON snapshot を v8 `.mkv3` に変換する
-- `migrate --input <v6> --output <path>`: v6 を v8 `.mkv3` へ変換する
-
-`import` と `migrate` は in-place を許可しない。入力パスと出力パスは必ず分ける。
-
-## 全体構造
-
-ファイルは次の順で並ぶ。
+ファイルは次の順で並びます。
 
 1. `Header`
 2. `SectionDescriptor[section_count]`
 3. 8-byte aligned metadata padding
 4. section bodies
 
-section body の canonical order は常に次のとおり。
+section body の canonical order は常に次のとおりです。
 
 1. `VocabOffsets`
 2. `VocabBlob`
@@ -50,11 +30,11 @@ section body の canonical order は常に次のとおり。
 6. `...`
 7. `Model(order = 1)`
 
-したがって `section_count = 3 + ngram_order` である。
+したがって `section_count = 3 + ngram_order` です。
 
 ## Header
 
-header は little-endian の固定長 52 bytes。
+header は little-endian の固定長 52 bytes です。
 
 ```rust
 struct Header {
@@ -72,17 +52,17 @@ struct Header {
 
 ### Header flags
 
-`flags` は `VocabBlob` 圧縮方式のみを表す。
+`flags` は `VocabBlob` 圧縮方式だけを表します。
 
 - `0x0000_0001`: RLE
 - `0x0000_0002`: Zstd
 - `0x0000_0004`: LZ4 (`lz4_flex` block format)
 
-0 または上記いずれか 1 つのみ許可する。
+`0` または上記いずれか 1 つのみ許可します。
 
 ## SectionDescriptor
 
-descriptor は little-endian の固定長 24 bytes。
+descriptor は little-endian の固定長 24 bytes です。
 
 ```rust
 struct SectionDescriptor {
@@ -102,11 +82,11 @@ struct SectionDescriptor {
 4 = Model
 ```
 
-- `VocabOffsets` / `VocabBlob` / `Starts` の `flags` は常に 0
+- `VocabOffsets` / `VocabBlob` / `Starts` の `flags` は常に `0`
 - `Model` の `flags` はその section が表す order
 - descriptor は canonical order で 1 回ずつのみ出現する
 
-## 語彙セクション
+## 語彙 section
 
 ### VocabOffsets
 
@@ -122,14 +102,14 @@ struct SectionDescriptor {
 - `Header.flags` に従って plain / RLE / Zstd / LZ4 で保存される
 - 復号後サイズは `VocabOffsets.last()` と一致しなければならない
 
-語彙復元後は次を満たす必要がある。
+語彙復元後は次を満たす必要があります。
 
 - token id `0` は `<BOS>`
 - token id `1` は `<EOS>`
 
 ## Starts section
 
-body の先頭に `record_count: u32` を持ち、その後に `ngram_order` 長の固定レコードを並べる。
+body の先頭に `record_count: u32` を持ち、その後に `ngram_order` 長の固定レコードを並べます。
 
 ```rust
 struct StartRecord {
@@ -144,7 +124,7 @@ struct StartRecord {
 
 ## Model section
 
-各 order ごとに 1 つの `Model` section を持つ。body 先頭は次の header。
+各 order ごとに 1 つの `Model` section を持ちます。body 先頭は次の header です。
 
 ```rust
 struct ModelSectionHeader {
@@ -153,7 +133,7 @@ struct ModelSectionHeader {
 }
 ```
 
-その後に `ModelRecord[record_count]`、続けて `EdgeRecord[edge_count]` を並べる。
+その後に `ModelRecord[record_count]`、続けて `EdgeRecord[edge_count]` を並べます。
 
 ```rust
 struct ModelRecord {
@@ -178,7 +158,7 @@ struct EdgeRecord {
 
 ## Validation
 
-reader は少なくとも次を検証する。
+reader は少なくとも次を検証します。
 
 - `magic`, `version`, `tokenizer_version`, `normalization_flags`
 - `ngram_order >= 1`
@@ -194,5 +174,7 @@ reader は少なくとも次を検証する。
 ## 互換性
 
 - v8 reader は v8 のみ受理する
-- v7 以前の `.mkv3` は破棄して再学習する前提
-- runtime の `MARKOV_NGRAM_ORDER` と保存済み `ngram_order` が違う場合、起動時に明示エラーで停止する
+- v7 以前の `.mkv3` はこの format と互換ではない
+- runtime の `MARKOV_NGRAM_ORDER` と保存済み `ngram_order` が違う場合、復元は明示エラーで停止する
+
+日常的な inspect / export / import / migrate の使い方は [operations.md](operations.md) を参照してください。
