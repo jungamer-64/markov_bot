@@ -76,7 +76,11 @@ pub(super) fn build_model2(
     let mut edge_records = Vec::new();
 
     for group in entries.chunk_by(|left, right| left.0[0] == right.0[0]) {
-        let w1 = group[0].0[0];
+        let (first_prefix, _) = group
+            .first()
+            .copied()
+            .ok_or("model2 pair group must contain at least one prefix")?;
+        let [w1, _w2] = first_prefix;
         validate_token_id(w1, token_count, "model2 pair.w1")?;
 
         let prefix_start = u32_from_usize(prefix_records.len(), "model2 prefix start")?;
@@ -211,7 +215,11 @@ fn validate_model3_pair_group(
     group: &[Model3Entry<'_>],
     token_count: u32,
 ) -> Result<(u32, u32), DynError> {
-    let [w1, w2, _] = group[0].0;
+    let (prefix, _) = group
+        .first()
+        .copied()
+        .ok_or("model3 pair group must contain at least one prefix")?;
+    let [w1, w2, _w3] = prefix;
     validate_token_id(w1, token_count, "model3 pair.w1")?;
     validate_token_id(w2, token_count, "model3 pair.w2")?;
     Ok((w1, w2))
@@ -348,14 +356,16 @@ fn compute_edge_len(edge_start: u32, edge_count: usize) -> Result<u32, DynError>
 mod tests {
     use std::collections::HashMap;
 
+    use crate::config::DynError;
     use crate::markov::MarkovChain;
+    use crate::test_support::{ensure, ensure_eq};
 
     use super::{
         EdgeRecord, append_edges, build_model2, build_model3, build_starts, sorted_pruned_edges,
     };
 
     #[test]
-    fn prunes_edges_below_min_count() {
+    fn prunes_edges_below_min_count() -> Result<(), DynError> {
         let mut source = HashMap::new();
         source.insert(3_u32, 1_u64);
         source.insert(1_u32, 4_u64);
@@ -363,77 +373,173 @@ mod tests {
 
         let filtered = sorted_pruned_edges(&source, 2);
 
-        assert_eq!(filtered, vec![(1_u32, 4_u64), (2_u32, 2_u64)]);
+        ensure_eq(
+            &filtered,
+            &vec![(1_u32, 4_u64), (2_u32, 2_u64)],
+            "edges below min count should be pruned and the rest sorted",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn append_edges_recalculates_cumulative_after_pruning() {
+    fn append_edges_recalculates_cumulative_after_pruning() -> Result<(), DynError> {
         let mut source = HashMap::new();
         source.insert(10_u32, 1_u64);
         source.insert(20_u32, 3_u64);
         source.insert(30_u32, 2_u64);
 
         let mut edges = Vec::<EdgeRecord>::new();
-        let (_start, len, total) =
-            append_edges(&source, &mut edges, 100, 2, "model edges").expect("append should work");
+        let (_start, len, total) = append_edges(&source, &mut edges, 100, 2, "model edges")?;
 
-        assert_eq!(len, 2);
-        assert_eq!(total, 5);
-        assert_eq!(edges[0].next, 20);
-        assert_eq!(edges[0].cumulative, 3);
-        assert_eq!(edges[1].next, 30);
-        assert_eq!(edges[1].cumulative, 5);
+        ensure_eq(&len, &2, "two retained edges should remain after pruning")?;
+        ensure_eq(&total, &5, "cumulative total should reflect retained edges")?;
+        let first = edges.first().ok_or("first retained edge should exist")?;
+        let second = edges.get(1).ok_or("second retained edge should exist")?;
+        ensure_eq(
+            &first.next,
+            &20,
+            "first retained edge should be sorted by next token",
+        )?;
+        ensure_eq(
+            &first.cumulative,
+            &3,
+            "first retained edge cumulative count should be recomputed",
+        )?;
+        ensure_eq(
+            &second.next,
+            &30,
+            "second retained edge should be sorted by next token",
+        )?;
+        ensure_eq(
+            &second.cumulative,
+            &5,
+            "second retained edge cumulative count should be recomputed",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn model3_pair_prefix_len_counts_only_retained_prefixes() {
+    fn model3_pair_prefix_len_counts_only_retained_prefixes() -> Result<(), DynError> {
         let mut chain = minimal_chain();
 
         chain.model3.insert([2, 3, 4], HashMap::from([(5, 1_u64)]));
         chain.model3.insert([2, 3, 5], HashMap::from([(6, 2_u64)]));
 
-        let (model3, prefix_to_id) =
-            build_model3(&chain, 7, 2).expect("build_model3 should succeed");
+        let (model3, prefix_to_id) = build_model3(&chain, 7, 2)?;
 
-        assert_eq!(model3.pairs.len(), 1);
-        assert_eq!(model3.pairs[0].prefix_start, 0);
-        assert_eq!(model3.pairs[0].prefix_len, 1);
-        assert_eq!(model3.prefixes.len(), 1);
-        assert_eq!(prefix_to_id.len(), 1);
-        assert!(prefix_to_id.contains_key(&[2, 3, 5]));
-        assert!(!prefix_to_id.contains_key(&[2, 3, 4]));
+        ensure_eq(
+            &model3.pairs.len(),
+            &1,
+            "only one model3 pair should remain",
+        )?;
+        let pair = model3
+            .pairs
+            .first()
+            .ok_or("retained model3 pair should exist")?;
+        ensure_eq(
+            &pair.prefix_start,
+            &0,
+            "retained model3 pair should start at prefix 0",
+        )?;
+        ensure_eq(
+            &pair.prefix_len,
+            &1,
+            "retained model3 pair should expose one prefix",
+        )?;
+        ensure_eq(
+            &model3.prefixes.len(),
+            &1,
+            "only one model3 prefix should remain",
+        )?;
+        ensure_eq(
+            &prefix_to_id.len(),
+            &1,
+            "one model3 prefix id should be assigned",
+        )?;
+        ensure(
+            prefix_to_id.contains_key(&[2, 3, 5]),
+            "retained model3 prefix must stay addressable",
+        )?;
+        ensure(
+            !prefix_to_id.contains_key(&[2, 3, 4]),
+            "pruned model3 prefix must be removed",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn model2_pair_prefix_len_counts_only_retained_prefixes() {
+    fn model2_pair_prefix_len_counts_only_retained_prefixes() -> Result<(), DynError> {
         let mut chain = minimal_chain();
 
         chain.model2.insert([2, 4], HashMap::from([(6, 1_u64)]));
         chain.model2.insert([2, 5], HashMap::from([(6, 2_u64)]));
 
-        let model2 = build_model2(&chain, 7, 2).expect("build_model2 should succeed");
+        let model2 = build_model2(&chain, 7, 2)?;
 
-        assert_eq!(model2.pairs.len(), 1);
-        assert_eq!(model2.pairs[0].w1, 2);
-        assert_eq!(model2.pairs[0].prefix_start, 0);
-        assert_eq!(model2.pairs[0].prefix_len, 1);
-        assert_eq!(model2.prefixes.len(), 1);
-        assert_eq!(model2.prefixes[0].w2, 5);
+        ensure_eq(
+            &model2.pairs.len(),
+            &1,
+            "only one model2 pair should remain",
+        )?;
+        let pair = model2
+            .pairs
+            .first()
+            .ok_or("retained model2 pair should exist")?;
+        ensure_eq(
+            &pair.w1,
+            &2,
+            "retained model2 pair should keep its first token",
+        )?;
+        ensure_eq(
+            &pair.prefix_start,
+            &0,
+            "retained model2 pair should start at prefix 0",
+        )?;
+        ensure_eq(
+            &pair.prefix_len,
+            &1,
+            "retained model2 pair should expose one prefix",
+        )?;
+        ensure_eq(
+            &model2.prefixes.len(),
+            &1,
+            "only one model2 prefix should remain",
+        )?;
+        let prefix = model2
+            .prefixes
+            .first()
+            .ok_or("retained model2 prefix should exist")?;
+        ensure_eq(
+            &prefix.w2,
+            &5,
+            "retained model2 prefix should keep the surviving token",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn starts_skip_prefixes_missing_after_pruning() {
+    fn starts_skip_prefixes_missing_after_pruning() -> Result<(), DynError> {
         let mut chain = minimal_chain();
         chain.starts.insert([2, 3, 4], 3);
         chain.starts.insert([2, 3, 5], 2);
 
         let prefix_to_id = HashMap::from([([2, 3, 5], 0_u32)]);
 
-        let starts = build_starts(&chain, &prefix_to_id).expect("build_starts should succeed");
+        let starts = build_starts(&chain, &prefix_to_id)?;
 
-        assert_eq!(starts.len(), 1);
-        assert_eq!(starts[0].prefix_id, 0);
-        assert_eq!(starts[0].cumulative, 2);
+        ensure_eq(&starts.len(), &1, "only one start record should remain")?;
+        let record = starts.first().ok_or("retained start record should exist")?;
+        ensure_eq(
+            &record.prefix_id,
+            &0,
+            "remaining start record should target prefix 0",
+        )?;
+        ensure_eq(
+            &record.cumulative,
+            &2,
+            "remaining start record cumulative count should match retained weight",
+        )?;
+        Ok(())
     }
 
     fn minimal_chain() -> MarkovChain {

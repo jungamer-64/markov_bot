@@ -2,6 +2,8 @@ mod config;
 mod discord_handler;
 mod markov;
 mod storage;
+#[cfg(test)]
+mod test_support;
 mod tokenizer;
 
 use std::sync::Arc;
@@ -24,16 +26,21 @@ use twilight_model::{
     },
 };
 
-#[tokio::main]
-async fn main() -> Result<(), DynError> {
+fn main() -> Result<(), DynError> {
     install_rustls_provider();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async_main())
+}
 
+async fn async_main() -> Result<(), DynError> {
     let config = BotConfig::from_env()?;
 
     let http = Arc::new(HttpClient::new(config.discord_token.clone()));
     let current_user_id = http.current_user().await?.model().await?.id;
     let application_id = http.current_user_application().await?.model().await?.id;
-    let handler = DiscordHandler::new(config.clone()).await?;
+    let handler = DiscordHandler::new(config.clone(), current_user_id).await?;
     register_slash_commands(&http, application_id).await?;
 
     let intents = Intents::GUILDS | Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT;
@@ -53,35 +60,32 @@ async fn main() -> Result<(), DynError> {
         let event = match item {
             Ok(event) => event,
             Err(source) => {
-                eprintln!("Gateway event receive error: {source:?}");
+                eprintln!("Gateway event receive error: {source}");
                 continue;
             }
         };
 
-        match event {
-            Event::MessageCreate(message) => {
-                if let Err(error) = handler
-                    .handle_message(
-                        &http,
-                        message.channel_id,
-                        message.author.id,
-                        message.author.bot,
-                        &message.content,
-                        current_user_id,
-                    )
-                    .await
-                {
-                    eprintln!("Failed to process message: {error}");
-                }
+        if let Event::MessageCreate(message) = event {
+            if let Err(error) = handler
+                .handle_message(
+                    &http,
+                    message.channel_id,
+                    message.author.id,
+                    message.author.bot,
+                    &message.content,
+                )
+                .await
+            {
+                eprintln!("Failed to process message: {error}");
             }
-            Event::InteractionCreate(interaction) => {
-                if let Err(error) =
-                    handle_interaction_command(&http, &handler, interaction.0, application_id).await
-                {
-                    eprintln!("Failed to process interaction: {error}");
-                }
-            }
-            _ => {}
+            continue;
+        }
+
+        if let Event::InteractionCreate(interaction) = event
+            && let Err(error) =
+                handle_interaction_command(&http, &handler, interaction.0, application_id).await
+        {
+            eprintln!("Failed to process interaction: {error}");
         }
     }
 
@@ -186,9 +190,10 @@ fn extract_channel_option(
             return None;
         }
 
-        match &option.value {
-            CommandOptionValue::Channel(channel_id) => Some(*channel_id),
-            _ => None,
+        if let CommandOptionValue::Channel(channel_id) = &option.value {
+            Some(*channel_id)
+        } else {
+            None
         }
     })
 }

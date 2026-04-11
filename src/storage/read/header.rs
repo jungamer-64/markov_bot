@@ -63,13 +63,16 @@ pub(super) fn build_section_table(bytes: &[u8], header: &Header) -> Result<Secti
     let descriptors = decode_descriptors(bytes, header.section_count)?;
     let metadata_end = usize_from_u64(aligned_metadata_end(section_count)?, "metadata size")?;
 
-    let mut entries = Vec::with_capacity(section_count);
+    let mut entries: Vec<SectionEntry> = Vec::with_capacity(section_count);
     let mut cursor = metadata_end;
 
     for (index, descriptor) in descriptors.into_iter().enumerate() {
         let kind = SectionKind::from_u32(descriptor.kind)
             .ok_or_else(|| format!("unknown section kind: {}", descriptor.kind))?;
-        let expected_kind = SectionKind::ALL[index];
+        let expected_kind = SectionKind::ALL
+            .get(index)
+            .copied()
+            .ok_or("section descriptors exceed canonical section count")?;
         if kind != expected_kind {
             return Err(format!(
                 "section descriptors are not in canonical order: expected {}, got {}",
@@ -107,11 +110,14 @@ pub(super) fn build_section_table(bytes: &[u8], header: &Header) -> Result<Secti
             return Err(format!("{} section overlaps previous section", kind.label()).into());
         }
 
-        let padding_context = entries.last().map_or("metadata", |entry: &SectionEntry| {
-            SectionKind::from_u32(entry.descriptor.kind)
-                .expect("validated descriptor kinds must remain known")
-                .label()
-        });
+        let padding_context = match entries.last() {
+            Some(entry) => {
+                let kind = SectionKind::from_u32(entry.descriptor.kind)
+                    .ok_or("validated descriptor kinds must remain known")?;
+                kind.label()
+            }
+            None => "metadata",
+        };
         validate_zero_padding(bytes, cursor, range.start, padding_context)?;
 
         cursor = range.end;

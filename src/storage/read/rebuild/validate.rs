@@ -34,12 +34,20 @@ pub(super) fn validate_and_build_model3_keys(
         }
 
         let mut previous_w3 = None;
-        for index in prefix_start..prefix_end {
-            if assigned[index] {
+        for (relative_index, prefix) in model
+            .prefixes
+            .get(prefix_start..prefix_end)
+            .ok_or("model3 pair prefix range is out of bounds")?
+            .iter()
+            .enumerate()
+        {
+            let index = prefix_start + relative_index;
+            let is_assigned = assigned
+                .get_mut(index)
+                .ok_or("model3 pair prefix range is out of bounds")?;
+            if *is_assigned {
                 return Err("model3 pair prefix ranges overlap".into());
             }
-
-            let prefix = model.prefixes[index];
             validate_token_id(prefix.w3, token_count, "model3 prefix.w3")?;
 
             if let Some(previous) = previous_w3
@@ -58,8 +66,11 @@ pub(super) fn validate_and_build_model3_keys(
                 "model3 prefix",
             )?;
 
-            full_prefixes[index] = [pair.w1, pair.w2, prefix.w3];
-            assigned[index] = true;
+            *full_prefixes
+                .get_mut(index)
+                .ok_or("model3 pair prefix range is out of bounds")? =
+                [pair.w1, pair.w2, prefix.w3];
+            *is_assigned = true;
         }
     }
 
@@ -127,10 +138,13 @@ pub(super) fn validate_starts(
         if prefix_id >= model3_prefix_count {
             return Err("start prefix_id is out of range".into());
         }
-        if seen[prefix_id] {
+        let seen_entry = seen
+            .get_mut(prefix_id)
+            .ok_or("start prefix_id is out of range")?;
+        if *seen_entry {
             return Err("duplicate start prefix_id is not allowed".into());
         }
-        seen[prefix_id] = true;
+        *seen_entry = true;
 
         if record.cumulative <= previous_cumulative {
             return Err("start cumulative must be strictly increasing".into());
@@ -190,13 +204,18 @@ fn validate_model2_pair_group(
 ) -> Result<(), DynError> {
     let mut previous_w2 = None;
 
-    for (index, is_assigned) in assigned.iter_mut().enumerate().take(end).skip(start) {
+    let prefixes = model
+        .prefixes
+        .get(start..end)
+        .ok_or("model2 pair prefix range is out of bounds")?;
+    for (prefix, is_assigned) in prefixes
+        .iter()
+        .zip(assigned.iter_mut().skip(start).take(end - start))
+    {
         if *is_assigned {
             return Err("model2 pair prefix ranges overlap".into());
         }
         *is_assigned = true;
-
-        let prefix = model.prefixes[index];
         if prefix.w1 != w1 {
             return Err("model2 prefix.w1 does not match model2 pair.w1".into());
         }
@@ -246,7 +265,9 @@ fn validate_prefix_edges(
         return Ok(());
     }
 
-    let edge_slice = &edges[start..end];
+    let edge_slice = edges
+        .get(start..end)
+        .ok_or_else(|| format!("{context} edge range is out of bounds"))?;
     let mut previous_next = None;
     let mut previous_cumulative = 0_u64;
 

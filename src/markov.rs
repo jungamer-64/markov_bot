@@ -6,25 +6,29 @@ use crate::config::DynError;
 
 mod sampling;
 
-pub type TokenId = u32;
-pub type Count = u64;
+pub(crate) type TokenId = u32;
+pub(crate) type Count = u64;
 
-pub const BOS_TOKEN: &str = "<BOS>";
-pub const EOS_TOKEN: &str = "<EOS>";
+pub(crate) const BOS_TOKEN: &str = "<BOS>";
+pub(crate) const EOS_TOKEN: &str = "<EOS>";
 
-pub const BOS_ID: TokenId = 0;
-pub const EOS_ID: TokenId = 1;
-pub const DEFAULT_GENERATION_TEMPERATURE: f64 = 1.0;
+pub(crate) const BOS_ID: TokenId = 0;
+pub(crate) const EOS_ID: TokenId = 1;
+pub(crate) const DEFAULT_GENERATION_TEMPERATURE: f64 = 1.0;
 
 #[derive(Debug, Clone, Copy)]
-pub struct GenerationOptions {
+pub(crate) struct GenerationOptions {
     pub max_words: usize,
     pub temperature: f64,
     pub min_words_before_eos: usize,
 }
 
 impl GenerationOptions {
-    pub const fn new(max_words: usize, temperature: f64, min_words_before_eos: usize) -> Self {
+    pub(crate) const fn new(
+        max_words: usize,
+        temperature: f64,
+        min_words_before_eos: usize,
+    ) -> Self {
         Self {
             max_words,
             temperature,
@@ -41,7 +45,7 @@ impl GenerationOptions {
 }
 
 #[derive(Debug, Clone)]
-pub struct MarkovChain {
+pub(crate) struct MarkovChain {
     pub(crate) token_to_id: HashMap<String, TokenId>,
     pub(crate) id_to_token: Vec<String>,
     pub(crate) model3: HashMap<[TokenId; 3], HashMap<TokenId, Count>>,
@@ -68,7 +72,7 @@ impl Default for MarkovChain {
 }
 
 impl MarkovChain {
-    pub fn train_tokens(&mut self, tokens: &[String]) -> Result<(), DynError> {
+    pub(crate) fn train_tokens(&mut self, tokens: &[String]) -> Result<(), DynError> {
         if tokens.is_empty() {
             return Ok(());
         }
@@ -86,14 +90,24 @@ impl MarkovChain {
         let first_token = *sentence
             .get(3)
             .ok_or("trained sentence is missing first token")?;
-        let start_prefix = [sentence[1], sentence[2], first_token];
+        let start_prefix = [
+            *sentence
+                .get(1)
+                .ok_or("trained sentence is missing second token")?,
+            *sentence
+                .get(2)
+                .ok_or("trained sentence is missing third token")?,
+            first_token,
+        ];
         increment_count(&mut self.starts, start_prefix);
 
         for window in sentence.windows(4) {
-            let prefix3 = [window[0], window[1], window[2]];
-            let prefix2 = [window[1], window[2]];
-            let prefix1 = window[2];
-            let next = window[3];
+            let [w1, w2, w3, next] = <&[TokenId; 4]>::try_from(window)
+                .map_err(|_error| "training window must contain exactly four tokens")?;
+            let prefix3 = [*w1, *w2, *w3];
+            let prefix2 = [*w2, *w3];
+            let prefix1 = *w3;
+            let next = *next;
 
             increment_nested_count(&mut self.model3, prefix3, next);
             increment_nested_count(&mut self.model2, prefix2, next);
@@ -104,7 +118,7 @@ impl MarkovChain {
     }
 
     #[cfg(test)]
-    pub fn generate_sentence<R: Rng + ?Sized>(
+    pub(crate) fn generate_sentence<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
         max_words: usize,
@@ -115,7 +129,7 @@ impl MarkovChain {
         )
     }
 
-    pub fn generate_sentence_with_options<R: Rng + ?Sized>(
+    pub(crate) fn generate_sentence_with_options<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
         options: GenerationOptions,
@@ -203,7 +217,7 @@ impl MarkovChain {
         }
 
         let next_id = u32::try_from(self.id_to_token.len())
-            .map_err(|_| "token vocabulary exceeds u32 range")?;
+            .map_err(|_error| "token vocabulary exceeds u32 range")?;
         let owned = token.to_owned();
 
         self.id_to_token.push(owned.clone());
@@ -305,66 +319,77 @@ fn increment_nested_count<K>(
 mod tests {
     use std::collections::HashMap;
 
+    use crate::config::DynError;
+    use crate::test_support::{ensure, ensure_eq};
     use rand::{SeedableRng, rngs::StdRng};
 
     use super::{BOS_ID, EOS_ID, GenerationOptions, MarkovChain};
 
     #[test]
-    fn trains_and_generates_sentence_without_spaces() {
+    fn trains_and_generates_sentence_without_spaces() -> Result<(), DynError> {
         let mut chain = MarkovChain::default();
-        chain
-            .train_tokens(&tokens(["今日", "は", "良い", "天気", "です", "ね"]))
-            .expect("training should succeed");
-        chain
-            .train_tokens(&tokens(["今日", "は", "少し", "寒い", "です", "ね"]))
-            .expect("training should succeed");
+        chain.train_tokens(&tokens(["今日", "は", "良い", "天気", "です", "ね"]))?;
+        chain.train_tokens(&tokens(["今日", "は", "少し", "寒い", "です", "ね"]))?;
 
         let mut rng = StdRng::seed_from_u64(42);
-        let sentence = chain
-            .generate_sentence(&mut rng, 20)
-            .expect("sentence should be generated");
+        let Some(sentence) = chain.generate_sentence(&mut rng, 20) else {
+            return Err("sentence should be generated".into());
+        };
 
-        assert!(!sentence.contains("<BOS>"));
-        assert!(!sentence.contains("<EOS>"));
-        assert!(!sentence.chars().any(char::is_whitespace));
+        ensure(
+            !sentence.contains("<BOS>"),
+            "generated sentence must not contain <BOS>",
+        )?;
+        ensure(
+            !sentence.contains("<EOS>"),
+            "generated sentence must not contain <EOS>",
+        )?;
+        ensure(
+            !sentence.chars().any(char::is_whitespace),
+            "generated sentence must not contain whitespace",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn learns_single_token_sentence() {
+    fn learns_single_token_sentence() -> Result<(), DynError> {
         let mut chain = MarkovChain::default();
-        chain
-            .train_tokens(&tokens(["草"]))
-            .expect("training should succeed");
+        chain.train_tokens(&tokens(["草"]))?;
 
         let mut rng = StdRng::seed_from_u64(1);
-        let sentence = chain
-            .generate_sentence(&mut rng, 20)
-            .expect("sentence should be generated");
+        let Some(sentence) = chain.generate_sentence(&mut rng, 20) else {
+            return Err("sentence should be generated".into());
+        };
 
-        assert_eq!(sentence, "草");
+        ensure_eq(
+            &sentence,
+            &"草",
+            "single-token sentence should be preserved",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn ignores_empty_tokens() {
+    fn ignores_empty_tokens() -> Result<(), DynError> {
         let mut chain = MarkovChain::default();
-        chain.train_tokens(&[]).expect("training should succeed");
+        chain.train_tokens(&[])?;
 
-        assert!(chain.starts.is_empty());
+        ensure(
+            chain.starts.is_empty(),
+            "empty training input must not create starts",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn temperature_changes_sampling_bias() {
+    fn temperature_changes_sampling_bias() -> Result<(), DynError> {
         let mut chain = MarkovChain::default();
 
         for _ in 0..120 {
-            chain
-                .train_tokens(&tokens(["a"]))
-                .expect("training should succeed");
+            chain.train_tokens(&tokens(["a"]))?;
         }
         for _ in 0..8 {
-            chain
-                .train_tokens(&tokens(["b"]))
-                .expect("training should succeed");
+            chain.train_tokens(&tokens(["b"]))?;
         }
 
         let low_temp = 0.35;
@@ -377,55 +402,69 @@ mod tests {
         let low_b = sample_b_frequency(&chain, &mut low_rng, sample_count, low_temp);
         let high_b = sample_b_frequency(&chain, &mut high_rng, sample_count, high_temp);
 
-        assert!(high_b > low_b);
+        ensure(
+            high_b > low_b,
+            "higher temperature should increase sampling frequency of the rarer token",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn eos_can_be_deferred_until_min_words() {
+    fn eos_can_be_deferred_until_min_words() -> Result<(), DynError> {
         let mut chain = MarkovChain::default();
-        chain
-            .train_tokens(&tokens(["x"]))
-            .expect("training should succeed");
+        chain.train_tokens(&tokens(["x"]))?;
 
         let mut rng = StdRng::seed_from_u64(99);
         let sentence =
             chain.generate_sentence_with_options(&mut rng, GenerationOptions::new(6, 1.0, 2));
 
-        assert_eq!(sentence, Some("xx".to_owned()));
+        ensure_eq(
+            &sentence,
+            &Some("xx".to_owned()),
+            "minimum words before EOS should defer termination",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn rejects_invalid_generation_options() {
+    fn rejects_invalid_generation_options() -> Result<(), DynError> {
         let mut chain = MarkovChain::default();
-        chain
-            .train_tokens(&tokens(["x"]))
-            .expect("training should succeed");
+        chain.train_tokens(&tokens(["x"]))?;
 
         let mut rng = StdRng::seed_from_u64(13);
         let sentence =
             chain.generate_sentence_with_options(&mut rng, GenerationOptions::new(5, 0.0, 0));
 
-        assert!(sentence.is_none());
+        ensure(
+            sentence.is_none(),
+            "invalid generation options must return None",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn stores_start_prefix_using_first_token() {
+    fn stores_start_prefix_using_first_token() -> Result<(), DynError> {
         let mut chain = MarkovChain::default();
-        chain
-            .train_tokens(&tokens(["a", "b"]))
-            .expect("training should succeed");
+        chain.train_tokens(&tokens(["a", "b"]))?;
 
-        let a_id = *chain
-            .token_to_id
-            .get("a")
-            .expect("token id for 'a' should exist");
+        let Some(a_id) = chain.token_to_id.get("a").copied() else {
+            return Err("token id for 'a' should exist".into());
+        };
 
-        assert_eq!(chain.starts.get(&[BOS_ID, BOS_ID, a_id]), Some(&1));
-        assert!(!chain.starts.contains_key(&[BOS_ID, BOS_ID, BOS_ID]));
+        ensure_eq(
+            &chain.starts.get(&[BOS_ID, BOS_ID, a_id]),
+            &Some(&1),
+            "start prefix should use the first generated token",
+        )?;
+        ensure(
+            !chain.starts.contains_key(&[BOS_ID, BOS_ID, BOS_ID]),
+            "pure BOS prefix must not be stored as a start",
+        )?;
+        Ok(())
     }
 
     #[test]
-    fn emits_seeded_start_token_before_first_transition() {
+    fn emits_seeded_start_token_before_first_transition() -> Result<(), DynError> {
         let mut chain = MarkovChain::default();
 
         chain.token_to_id.insert("a".to_owned(), 2);
@@ -444,7 +483,12 @@ mod tests {
         let sentence =
             chain.generate_sentence_with_options(&mut rng, GenerationOptions::new(1, 1.0, 0));
 
-        assert_eq!(sentence, Some("a".to_owned()));
+        ensure_eq(
+            &sentence,
+            &Some("a".to_owned()),
+            "seeded start token should be emitted before the first transition",
+        )?;
+        Ok(())
     }
 
     fn sample_b_frequency(

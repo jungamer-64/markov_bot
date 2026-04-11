@@ -7,7 +7,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::config::DynError;
 
 #[derive(Clone)]
-pub struct Tokenizer {
+pub(crate) struct Tokenizer {
     lindera_tokenizer: Option<LinderaTokenizer>,
 }
 
@@ -18,13 +18,13 @@ impl Default for Tokenizer {
 }
 
 impl Tokenizer {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             lindera_tokenizer: build_lindera_tokenizer().ok(),
         }
     }
 
-    pub fn tokenize(&self, text: &str) -> Vec<String> {
+    pub(crate) fn tokenize(&self, text: &str) -> Vec<String> {
         let normalized = normalize_text(text);
         if normalized.is_empty() {
             return Vec::new();

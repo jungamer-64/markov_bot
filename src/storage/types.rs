@@ -121,10 +121,10 @@ pub(super) struct SectionTable {
 }
 
 impl SectionTable {
-    pub(super) fn entry(&self, kind: SectionKind) -> &SectionEntry {
+    pub(super) fn entry(&self, kind: SectionKind) -> Result<&SectionEntry, DynError> {
         self.entries
             .get(kind.index())
-            .expect("section table must contain all canonical sections")
+            .ok_or_else(|| format!("section table is missing {}", kind.label()).into())
     }
 }
 

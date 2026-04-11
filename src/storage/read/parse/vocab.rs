@@ -12,11 +12,13 @@ pub(in crate::storage::read) fn decode_vocab(
 
     let mut tokens = Vec::with_capacity(offsets.len().saturating_sub(1));
     for pair in offsets.windows(2) {
-        let start = usize_from_u64(pair[0], "vocab token start")?;
-        let end = usize_from_u64(pair[1], "vocab token end")?;
+        let [start_offset, end_offset] = <&[u64; 2]>::try_from(pair)
+            .map_err(|_error| "vocab offset pair must contain two values")?;
+        let start = usize_from_u64(*start_offset, "vocab token start")?;
+        let end = usize_from_u64(*end_offset, "vocab token end")?;
         let token_bytes = blob.get(start..end).ok_or("vocab token range is invalid")?;
         let token = str::from_utf8(token_bytes)
-            .map_err(|_| "vocab token is not valid UTF-8")?
+            .map_err(|_error| "vocab token is not valid UTF-8")?
             .to_owned();
         tokens.push(token);
     }
@@ -30,7 +32,9 @@ pub(super) fn validate_vocab_offsets(offsets: &[u64]) -> Result<(), DynError> {
     }
 
     for pair in offsets.windows(2) {
-        if pair[0] > pair[1] {
+        let [start_offset, end_offset] = <&[u64; 2]>::try_from(pair)
+            .map_err(|_error| "vocab offset pair must contain two values")?;
+        if start_offset > end_offset {
             return Err("vocab offsets must be non-decreasing".into());
         }
     }

@@ -155,10 +155,11 @@ impl<K: Copy> AliasTable<K> {
 
         let column = rng.random_range(0..self.keys.len());
         let threshold = rng.random_range(0.0_f64..1.0_f64);
-        let picked = if threshold < self.probabilities[column] {
+        let probability = *self.probabilities.get(column)?;
+        let picked = if threshold < probability {
             column
         } else {
-            self.aliases[column]
+            *self.aliases.get(column)?
         };
 
         self.keys.get(picked).copied()
@@ -221,11 +222,28 @@ fn fill_alias_tables(
     large: &mut Vec<usize>,
 ) {
     while let (Some(small_index), Some(large_index)) = (small.pop(), large.pop()) {
-        probabilities[small_index] = scaled[small_index].clamp(0.0, 1.0);
-        aliases[small_index] = large_index;
+        let Some(small_scaled) = scaled.get(small_index).copied() else {
+            continue;
+        };
+        let Some(probability) = probabilities.get_mut(small_index) else {
+            continue;
+        };
+        *probability = small_scaled.clamp(0.0, 1.0);
+        let assigned_probability = *probability;
 
-        scaled[large_index] = (scaled[large_index] + probabilities[small_index]) - 1.0;
-        if scaled[large_index] < (1.0 - f64::EPSILON) {
+        let Some(alias) = aliases.get_mut(small_index) else {
+            continue;
+        };
+        *alias = large_index;
+
+        let Some(large_scaled) = scaled.get(large_index).copied() else {
+            continue;
+        };
+        let Some(large_slot) = scaled.get_mut(large_index) else {
+            continue;
+        };
+        *large_slot = (large_scaled + assigned_probability) - 1.0;
+        if *large_slot < (1.0 - f64::EPSILON) {
             small.push(large_index);
         } else {
             large.push(large_index);
@@ -235,8 +253,12 @@ fn fill_alias_tables(
 
 fn finalize_alias_entries(probabilities: &mut [f64], aliases: &mut [usize], indices: Vec<usize>) {
     for index in indices {
-        probabilities[index] = 1.0;
-        aliases[index] = index;
+        if let Some(probability) = probabilities.get_mut(index) {
+            *probability = 1.0;
+        }
+        if let Some(alias) = aliases.get_mut(index) {
+            *alias = index;
+        }
     }
 }
 

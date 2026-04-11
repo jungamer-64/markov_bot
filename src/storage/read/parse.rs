@@ -13,14 +13,14 @@ pub(super) fn parse_storage(
     table: &SectionTable,
 ) -> Result<StorageSections, DynError> {
     let vocab_offsets = records::parse_u64_section(
-        bytes[table.entry(SectionKind::VocabOffsets).range.clone()].as_ref(),
+        section_bytes(bytes, table, SectionKind::VocabOffsets)?,
         SectionKind::VocabOffsets.label(),
     )?;
     vocab::validate_vocab_offsets(vocab_offsets.as_slice())?;
 
     let vocab_blob_size = *vocab_offsets.last().ok_or("vocab offsets are empty")?;
     let vocab_blob = compression::decode_vocab_blob(
-        bytes[table.entry(SectionKind::VocabBlob).range.clone()].as_ref(),
+        section_bytes(bytes, table, SectionKind::VocabBlob)?,
         usize_from_u64(vocab_blob_size, "vocab blob size")?,
         header.flags,
     )?;
@@ -31,46 +31,57 @@ pub(super) fn parse_storage(
             blob: vocab_blob,
         },
         starts: records::parse_fixed_section(
-            bytes[table.entry(SectionKind::Starts).range.clone()].as_ref(),
+            section_bytes(bytes, table, SectionKind::Starts)?,
             SectionKind::Starts.label(),
         )?,
         model3: Model3Sections {
             pairs: records::parse_fixed_section(
-                bytes[table.entry(SectionKind::Model3Pairs).range.clone()].as_ref(),
+                section_bytes(bytes, table, SectionKind::Model3Pairs)?,
                 SectionKind::Model3Pairs.label(),
             )?,
             prefixes: records::parse_fixed_section(
-                bytes[table.entry(SectionKind::Model3Prefixes).range.clone()].as_ref(),
+                section_bytes(bytes, table, SectionKind::Model3Prefixes)?,
                 SectionKind::Model3Prefixes.label(),
             )?,
             edges: records::parse_fixed_section(
-                bytes[table.entry(SectionKind::Model3Edges).range.clone()].as_ref(),
+                section_bytes(bytes, table, SectionKind::Model3Edges)?,
                 SectionKind::Model3Edges.label(),
             )?,
         },
         model2: Model2Sections {
             pairs: records::parse_fixed_section(
-                bytes[table.entry(SectionKind::Model2Pairs).range.clone()].as_ref(),
+                section_bytes(bytes, table, SectionKind::Model2Pairs)?,
                 SectionKind::Model2Pairs.label(),
             )?,
             prefixes: records::parse_fixed_section(
-                bytes[table.entry(SectionKind::Model2Prefixes).range.clone()].as_ref(),
+                section_bytes(bytes, table, SectionKind::Model2Prefixes)?,
                 SectionKind::Model2Prefixes.label(),
             )?,
             edges: records::parse_fixed_section(
-                bytes[table.entry(SectionKind::Model2Edges).range.clone()].as_ref(),
+                section_bytes(bytes, table, SectionKind::Model2Edges)?,
                 SectionKind::Model2Edges.label(),
             )?,
         },
         model1: Model1Sections {
             prefixes: records::parse_fixed_section(
-                bytes[table.entry(SectionKind::Model1Prefixes).range.clone()].as_ref(),
+                section_bytes(bytes, table, SectionKind::Model1Prefixes)?,
                 SectionKind::Model1Prefixes.label(),
             )?,
             edges: records::parse_fixed_section(
-                bytes[table.entry(SectionKind::Model1Edges).range.clone()].as_ref(),
+                section_bytes(bytes, table, SectionKind::Model1Edges)?,
                 SectionKind::Model1Edges.label(),
             )?,
         },
     })
+}
+
+fn section_bytes<'a>(
+    bytes: &'a [u8],
+    table: &SectionTable,
+    kind: SectionKind,
+) -> Result<&'a [u8], DynError> {
+    let range = table.entry(kind)?.range.clone();
+    bytes
+        .get(range)
+        .ok_or_else(|| format!("{} range is out of bounds", kind.label()).into())
 }

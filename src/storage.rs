@@ -51,7 +51,7 @@ const PREFIX2_RECORD_SIZE: u64 = 24;
 const PREFIX1_RECORD_SIZE: u64 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StorageCompressionMode {
+pub(crate) enum StorageCompressionMode {
     Auto,
     Uncompressed,
     Rle,
@@ -60,7 +60,7 @@ pub enum StorageCompressionMode {
 }
 
 impl StorageCompressionMode {
-    pub fn parse(raw: &str) -> Result<Self, DynError> {
+    pub(crate) fn parse(raw: &str) -> Result<Self, DynError> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
             "none" | "off" | "uncompressed" => Ok(Self::Uncompressed),
@@ -74,7 +74,7 @@ impl StorageCompressionMode {
         }
     }
 
-    pub const fn as_env_value(self) -> &'static str {
+    pub(crate) const fn as_env_value(self) -> &'static str {
         match self {
             Self::Auto => "auto",
             Self::Uncompressed => "none",
@@ -85,7 +85,7 @@ impl StorageCompressionMode {
     }
 }
 
-pub async fn load_chain(path: &Path) -> Result<MarkovChain, DynError> {
+pub(crate) async fn load_chain(path: &Path) -> Result<MarkovChain, DynError> {
     let bytes = match fs::read(path).await {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(MarkovChain::default()),
@@ -95,7 +95,7 @@ pub async fn load_chain(path: &Path) -> Result<MarkovChain, DynError> {
     read::decode_chain(bytes.as_slice())
 }
 
-pub async fn save_chain(
+pub(crate) async fn save_chain(
     path: &Path,
     chain: &MarkovChain,
     min_edge_count: Count,
@@ -157,19 +157,19 @@ fn checked_add(left: u64, right: u64, context: &str) -> Result<u64, DynError> {
 }
 
 fn usize_from_u32(value: u32, context: &str) -> Result<usize, DynError> {
-    usize::try_from(value).map_err(|_| format!("{context} exceeds usize range").into())
+    usize::try_from(value).map_err(|_error| format!("{context} exceeds usize range").into())
 }
 
 fn usize_from_u64(value: u64, context: &str) -> Result<usize, DynError> {
-    usize::try_from(value).map_err(|_| format!("{context} exceeds usize range").into())
+    usize::try_from(value).map_err(|_error| format!("{context} exceeds usize range").into())
 }
 
 fn u32_from_usize(value: usize, context: &str) -> Result<u32, DynError> {
-    u32::try_from(value).map_err(|_| format!("{context} exceeds u32 range").into())
+    u32::try_from(value).map_err(|_error| format!("{context} exceeds u32 range").into())
 }
 
 fn u64_from_usize(value: usize, context: &str) -> Result<u64, DynError> {
-    u64::try_from(value).map_err(|_| format!("{context} exceeds u64 range").into())
+    u64::try_from(value).map_err(|_error| format!("{context} exceeds u64 range").into())
 }
 
 fn aligned_metadata_end(section_count: usize) -> Result<u64, DynError> {

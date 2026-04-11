@@ -20,12 +20,20 @@ pub(super) fn encode_storage(
         descriptors.as_slice(),
         header.file_size,
     )?;
-    bytes[..metadata_without_checksum.len()].copy_from_slice(metadata_without_checksum.as_slice());
+    let metadata_without_checksum_len = metadata_without_checksum.len();
+    bytes
+        .get_mut(..metadata_without_checksum_len)
+        .ok_or("encoded metadata without checksum exceeds payload length")?
+        .copy_from_slice(metadata_without_checksum.as_slice());
 
     header.checksum = compute_checksum(bytes.as_slice())?;
 
     let metadata = header::encode_metadata(header, descriptors.as_slice());
-    bytes[..metadata.len()].copy_from_slice(metadata.as_slice());
+    let metadata_len = metadata.len();
+    bytes
+        .get_mut(..metadata_len)
+        .ok_or("encoded metadata exceeds payload length")?
+        .copy_from_slice(metadata.as_slice());
 
     Ok(bytes)
 }

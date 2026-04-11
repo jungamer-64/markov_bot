@@ -2,22 +2,22 @@ use std::{env, error::Error, path::PathBuf};
 
 use crate::storage::StorageCompressionMode;
 
-pub type DynError = Box<dyn Error + Send + Sync>;
+pub(crate) type DynError = Box<dyn Error + Send + Sync>;
 
 #[derive(Clone, Debug)]
-pub struct BotConfig {
-    pub discord_token: String,
-    pub data_path: PathBuf,
-    pub storage_min_edge_count: u64,
-    pub storage_compression: StorageCompressionMode,
-    pub max_words: usize,
-    pub generation_temperature: f64,
-    pub min_words_before_eos: usize,
-    pub reply_cooldown_secs: u64,
+pub(super) struct BotConfig {
+    pub(crate) discord_token: String,
+    pub(crate) data_path: PathBuf,
+    pub(crate) storage_min_edge_count: u64,
+    pub(crate) storage_compression: StorageCompressionMode,
+    pub(crate) max_words: usize,
+    pub(crate) generation_temperature: f64,
+    pub(crate) min_words_before_eos: usize,
+    pub(crate) reply_cooldown_secs: u64,
 }
 
 impl BotConfig {
-    pub fn from_env() -> Result<Self, DynError> {
+    pub(crate) fn from_env() -> Result<Self, DynError> {
         dotenvy::dotenv().ok();
 
         let discord_token = required_env("DISCORD_TOKEN")?;

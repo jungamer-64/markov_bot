@@ -22,7 +22,10 @@ pub(super) fn build_header(
     let mut descriptors = Vec::with_capacity(payloads.len());
 
     for (index, payload) in payloads.iter().enumerate() {
-        let expected_kind = SectionKind::ALL[index];
+        let expected_kind = SectionKind::ALL
+            .get(index)
+            .copied()
+            .ok_or("section payload count exceeds canonical section count")?;
         if payload.kind != expected_kind {
             return Err(format!(
                 "section payload order mismatch: expected {}, got {}",

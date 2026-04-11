@@ -34,18 +34,23 @@ struct HandleOutcome {
 }
 
 #[derive(Clone)]
-pub struct DiscordHandler {
+pub(crate) struct DiscordHandler {
     config: BotConfig,
+    current_user_id: Id<UserMarker>,
     tokenizer: Tokenizer,
     state: Arc<Mutex<RuntimeState>>,
 }
 
 impl DiscordHandler {
-    pub async fn new(config: BotConfig) -> Result<Self, DynError> {
+    pub(crate) async fn new(
+        config: BotConfig,
+        current_user_id: Id<UserMarker>,
+    ) -> Result<Self, DynError> {
         let chain = load_chain(&config.data_path).await?;
 
         Ok(Self {
             config,
+            current_user_id,
             tokenizer: Tokenizer::new(),
             state: Arc::new(Mutex::new(RuntimeState {
                 chain,
@@ -55,23 +60,21 @@ impl DiscordHandler {
         })
     }
 
-    pub async fn set_target_channel(&self, channel_id: Id<ChannelMarker>) {
+    pub(crate) async fn set_target_channel(&self, channel_id: Id<ChannelMarker>) {
         let mut state = self.state.lock().await;
         state.target_channel_id = Some(channel_id);
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub async fn handle_message(
+    pub(crate) async fn handle_message(
         &self,
         http: &HttpClient,
         channel_id: Id<ChannelMarker>,
         author_id: Id<UserMarker>,
         author_is_bot: bool,
         content: &str,
-        current_user_id: Id<UserMarker>,
     ) -> Result<(), DynError> {
         if self
-            .should_skip_message(channel_id, author_id, author_is_bot, current_user_id)
+            .should_skip_message(channel_id, author_id, author_is_bot)
             .await
         {
             return Ok(());
@@ -111,10 +114,9 @@ impl DiscordHandler {
         channel_id: Id<ChannelMarker>,
         author_id: Id<UserMarker>,
         author_is_bot: bool,
-        current_user_id: Id<UserMarker>,
     ) -> bool {
         !self.is_target_channel(channel_id).await
-            || should_ignore_author(author_is_bot, author_id, current_user_id)
+            || should_ignore_author(author_is_bot, author_id, self.current_user_id)
     }
 
     async fn update_state_for_message(
