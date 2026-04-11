@@ -1,9 +1,10 @@
 use std::{env, error::Error, path::PathBuf};
 
-use crate::markov::{DEFAULT_NGRAM_ORDER, validate_ngram_order};
-use crate::storage::StorageCompressionMode;
+use anyhow::{Error as AnyhowError, anyhow};
+use markov_core::{DEFAULT_NGRAM_ORDER, validate_ngram_order};
+use markov_storage::StorageCompressionMode;
 
-pub(crate) type DynError = Box<dyn Error + Send + Sync>;
+pub(crate) type DynError = AnyhowError;
 
 #[derive(Clone, Debug)]
 pub(super) struct BotConfig {
@@ -35,12 +36,13 @@ impl BotConfig {
 
         let ngram_order =
             env_parse_or_default_with(&mut get_var, "MARKOV_NGRAM_ORDER", DEFAULT_NGRAM_ORDER)?;
-        validate_ngram_order(ngram_order, "MARKOV_NGRAM_ORDER")?;
+        validate_ngram_order(ngram_order, "MARKOV_NGRAM_ORDER")
+            .map_err(|error| AnyhowError::msg(error.to_string()))?;
 
         let storage_min_edge_count =
             env_parse_or_default_with(&mut get_var, "STORAGE_MIN_EDGE_COUNT", 1_u64)?;
         if storage_min_edge_count == 0 {
-            return Err("STORAGE_MIN_EDGE_COUNT must be >= 1".into());
+            return Err(anyhow!("STORAGE_MIN_EDGE_COUNT must be >= 1"));
         }
 
         let storage_compression = match get_var("STORAGE_COMPRESSION") {
@@ -51,19 +53,21 @@ impl BotConfig {
 
         let max_words = env_parse_or_default_with(&mut get_var, "REPLY_MAX_WORDS", 20_usize)?;
         if max_words == 0 {
-            return Err("REPLY_MAX_WORDS must be >= 1".into());
+            return Err(anyhow!("REPLY_MAX_WORDS must be >= 1"));
         }
 
         let generation_temperature =
             env_parse_or_default_with(&mut get_var, "REPLY_TEMPERATURE", 1.0_f64)?;
         if !generation_temperature.is_finite() || generation_temperature <= 0.0 {
-            return Err("REPLY_TEMPERATURE must be a finite value > 0".into());
+            return Err(anyhow!("REPLY_TEMPERATURE must be a finite value > 0"));
         }
 
         let min_words_before_eos =
             env_parse_or_default_with(&mut get_var, "REPLY_MIN_WORDS_BEFORE_EOS", 0_usize)?;
         if min_words_before_eos > max_words {
-            return Err("REPLY_MIN_WORDS_BEFORE_EOS must be <= REPLY_MAX_WORDS".into());
+            return Err(anyhow!(
+                "REPLY_MIN_WORDS_BEFORE_EOS must be <= REPLY_MAX_WORDS"
+            ));
         }
 
         let reply_cooldown_secs =
@@ -89,7 +93,7 @@ where
 {
     let value = get_var(key)?;
     if value.trim().is_empty() {
-        return Err(format!("{key} is empty").into());
+        return Err(anyhow!("{key} is empty"));
     }
 
     Ok(value)
@@ -112,9 +116,15 @@ where
 mod tests {
     use std::collections::HashMap;
 
-    use crate::test_support::ensure;
-
     use super::BotConfig;
+
+    fn ensure(condition: bool, message: &str) -> Result<(), super::DynError> {
+        if condition {
+            Ok(())
+        } else {
+            Err(anyhow::Error::msg(message.to_owned()))
+        }
+    }
 
     fn config_from_pairs(pairs: &[(&str, &str)]) -> Result<BotConfig, super::DynError> {
         let env = pairs

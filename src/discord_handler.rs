@@ -1,9 +1,14 @@
 use std::{
+    io,
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
 
+use markov_core::{GenerationOptions, MarkovChain};
+use markov_storage::{StorageCompressionMode, decode_v8_chain, encode_v8_chain};
 use rand::rng;
+use tokio::fs;
 use tokio::sync::Mutex;
 use twilight_http::Client as HttpClient;
 use twilight_model::id::{
@@ -13,8 +18,6 @@ use twilight_model::id::{
 
 use crate::{
     config::{BotConfig, DynError},
-    markov::{GenerationOptions, MarkovChain},
-    storage::{load_chain, save_chain},
     tokenizer::Tokenizer,
 };
 
@@ -181,18 +184,51 @@ fn can_reply(last_reply_at: Option<Instant>, cooldown: Duration) -> bool {
     last_reply_at.is_none_or(|last| last.elapsed() >= cooldown)
 }
 
+async fn load_chain(path: &Path, expected_ngram_order: usize) -> Result<MarkovChain, DynError> {
+    let bytes = match fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return MarkovChain::new(expected_ngram_order).map_err(|error| error.into());
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    decode_v8_chain(bytes.as_slice(), expected_ngram_order).map_err(Into::into)
+}
+
+async fn save_chain(
+    path: &Path,
+    chain: &MarkovChain,
+    min_edge_count: u64,
+    compression_mode: StorageCompressionMode,
+) -> Result<(), DynError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).await?;
+    }
+
+    let payload = encode_v8_chain(chain, min_edge_count, compression_mode)?;
+    fs::write(path, payload).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
     use twilight_model::id::Id;
 
-    use crate::{
-        config::BotConfig,
-        markov::MarkovChain,
-        storage::{StorageCompressionMode, save_chain},
-    };
+    use crate::config::BotConfig;
+    use markov_core::MarkovChain;
+    use markov_storage::StorageCompressionMode;
 
-    use super::DiscordHandler;
+    use super::{DiscordHandler, save_chain};
+
+    fn ensure(condition: bool, message: &str) -> Result<(), crate::config::DynError> {
+        if condition {
+            Ok(())
+        } else {
+            Err(anyhow::Error::msg(message.to_owned()))
+        }
+    }
 
     fn run_async_test<F>(future: F) -> Result<(), crate::config::DynError>
     where
@@ -226,7 +262,7 @@ mod tests {
             };
 
             let result = DiscordHandler::new(config, Id::new(1)).await;
-            crate::test_support::ensure(
+            ensure(
                 result.is_ok(),
                 "DiscordHandler::new should load matching order=7 data",
             )?;
@@ -256,7 +292,7 @@ mod tests {
             };
 
             let result = DiscordHandler::new(config, Id::new(1)).await;
-            crate::test_support::ensure(
+            ensure(
                 result.is_err(),
                 "DiscordHandler::new should fail when saved ngram order differs from config",
             )?;

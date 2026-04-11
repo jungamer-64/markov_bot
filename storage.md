@@ -12,6 +12,25 @@ v8 の要点は次のとおり。
 - `Starts` は固定 6-token 参照ではなく、`ngram_order` 長の prefix を直接保存する
 - v7 以前との互換性は持たない。reader は v8 のみ受理する
 
+## 実装配置
+
+- bot 本体は root package `markov_bot` の binary のみを持つ
+- `markov-core` crate が `MarkovChain` と生成・学習ロジックを持つ
+- `markov-storage` crate が v8 の encode/decode と JSON 用 `StorageSnapshot` を持つ
+- `markov-storage-cli` package が `markov-storage` バイナリを提供し、`inspect` / `export` / `import` / `migrate` を実装する
+- v6 reader は `markov-storage-cli` の private module に閉じ込め、本体と `markov-storage` crate は過去 version を知らない
+
+## CLI
+
+`markov-storage` は次のサブコマンドを持つ。
+
+- `inspect --input <path>`: v6 / v8 を自動判別して summary を表示する
+- `export --input <path> --output <path>`: v6 / v8 を canonical JSON snapshot へ書き出す
+- `import --input <json> --output <path>`: JSON snapshot を v8 `.mkv3` に変換する
+- `migrate --input <v6> --output <path>`: v6 を v8 `.mkv3` へ変換する
+
+`import` と `migrate` は in-place を許可しない。入力パスと出力パスは必ず分ける。
+
 ## 全体構造
 
 ファイルは次の順で並ぶ。

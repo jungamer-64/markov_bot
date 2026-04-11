@@ -1,9 +1,5 @@
 mod config;
 mod discord_handler;
-mod markov;
-mod storage;
-#[cfg(test)]
-mod test_support;
 mod tokenizer;
 
 use std::sync::Arc;

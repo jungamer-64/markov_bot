@@ -5,10 +5,10 @@ use lz4_flex::block::decompress_into as lz4_decompress_into;
 use super::{
     DynError, EDGE_RECORD_SIZE, FLAG_VOCAB_BLOB_LZ4_FLEX, FLAG_VOCAB_BLOB_RLE,
     FLAG_VOCAB_BLOB_ZSTD, HEADER_SIZE, MAGIC, MODEL_SECTION_HEADER_SIZE, NORMALIZATION_FLAGS,
-    START_SECTION_HEADER_SIZE, TOKENIZER_VERSION, VERSION, aligned_metadata_end, checked_add,
-    compute_checksum, descriptor_count_for_ngram_order, model_record_size, start_record_size,
-    u64_from_usize, usize_from_u32, usize_from_u64, validate_special_tokens, validate_token_id,
-    vocab_blob_compression_flags,
+    START_SECTION_HEADER_SIZE, TOKENIZER_VERSION, VERSION, aligned_metadata_end, chain_to_snapshot,
+    checked_add, compression_mode_from_flags, compute_checksum, descriptor_count_for_ngram_order,
+    model_record_size, start_record_size, u64_from_usize, usize_from_u32, usize_from_u64,
+    validate_special_tokens, validate_token_id, vocab_blob_compression_flags,
 };
 use crate::markov::{Count, MarkovChain, Prefix, TokenId, validate_ngram_order};
 
@@ -72,6 +72,47 @@ pub(super) fn decode_chain(
     let sections = parse_storage(bytes, &header, &table, actual_ngram_order)?;
 
     rebuild_chain(&sections)
+}
+
+pub(super) fn decode_snapshot(bytes: &[u8]) -> Result<super::StorageSnapshot, DynError> {
+    let header = validate_header(bytes)?;
+    let actual_ngram_order = usize::try_from(header.ngram_order)
+        .map_err(|_error| "header ngram_order exceeds usize range")?;
+    validate_ngram_order(actual_ngram_order, "header ngram_order")?;
+
+    let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order)?;
+    if header.section_count != expected_section_count {
+        return Err(format!(
+            "section count mismatch: expected {expected_section_count}, got {}",
+            header.section_count
+        )
+        .into());
+    }
+
+    let stored_file_size = u64_from_usize(bytes.len(), "file size")?;
+    if header.file_size != stored_file_size {
+        return Err(format!(
+            "file size mismatch: header={}, actual={stored_file_size}",
+            header.file_size
+        )
+        .into());
+    }
+
+    let actual_checksum = compute_checksum(bytes)?;
+    if header.checksum != actual_checksum {
+        return Err(format!(
+            "checksum mismatch: expected {}, got {actual_checksum}",
+            header.checksum
+        )
+        .into());
+    }
+
+    let table = build_section_table(bytes, &header)?;
+    let sections = parse_storage(bytes, &header, &table, actual_ngram_order)?;
+    let chain = rebuild_chain(&sections)?;
+    let compression_mode = compression_mode_from_flags(header.flags)?;
+
+    chain_to_snapshot(&chain, compression_mode)
 }
 
 fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {

@@ -1,25 +1,44 @@
 use std::{collections::HashMap, hash::Hash};
 
 use rand::Rng;
-
-use crate::config::DynError;
+use thiserror::Error;
 
 mod sampling;
+#[cfg(test)]
+mod test_support;
 
-pub(crate) type TokenId = u32;
-pub(crate) type Count = u64;
-pub(crate) type Prefix = Vec<TokenId>;
+pub type TokenId = u32;
+pub type Count = u64;
+pub type Prefix = Vec<TokenId>;
 
-pub(crate) const DEFAULT_NGRAM_ORDER: usize = 6;
+pub const DEFAULT_NGRAM_ORDER: usize = 6;
 
-pub(crate) const BOS_TOKEN: &str = "<BOS>";
-pub(crate) const EOS_TOKEN: &str = "<EOS>";
+pub const BOS_TOKEN: &str = "<BOS>";
+pub const EOS_TOKEN: &str = "<EOS>";
 
-pub(crate) const BOS_ID: TokenId = 0;
-pub(crate) const EOS_ID: TokenId = 1;
-pub(crate) const DEFAULT_GENERATION_TEMPERATURE: f64 = 1.0;
+pub const BOS_ID: TokenId = 0;
+pub const EOS_ID: TokenId = 1;
+pub const DEFAULT_GENERATION_TEMPERATURE: f64 = 1.0;
 
-pub(crate) fn validate_ngram_order(ngram_order: usize, context: &str) -> Result<(), DynError> {
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum MarkovError {
+    #[error("{0}")]
+    Invalid(String),
+}
+
+impl From<&str> for MarkovError {
+    fn from(value: &str) -> Self {
+        Self::Invalid(value.to_owned())
+    }
+}
+
+impl From<String> for MarkovError {
+    fn from(value: String) -> Self {
+        Self::Invalid(value)
+    }
+}
+
+pub fn validate_ngram_order(ngram_order: usize, context: &str) -> Result<(), MarkovError> {
     if ngram_order == 0 {
         return Err(format!("{context} must be >= 1").into());
     }
@@ -30,18 +49,14 @@ pub(crate) fn validate_ngram_order(ngram_order: usize, context: &str) -> Result<
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct GenerationOptions {
+pub struct GenerationOptions {
     pub max_words: usize,
     pub temperature: f64,
     pub min_words_before_eos: usize,
 }
 
 impl GenerationOptions {
-    pub(crate) const fn new(
-        max_words: usize,
-        temperature: f64,
-        min_words_before_eos: usize,
-    ) -> Self {
+    pub const fn new(max_words: usize, temperature: f64, min_words_before_eos: usize) -> Self {
         Self {
             max_words,
             temperature,
@@ -58,16 +73,16 @@ impl GenerationOptions {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct MarkovChain {
-    pub(crate) ngram_order: usize,
-    pub(crate) token_to_id: HashMap<String, TokenId>,
-    pub(crate) id_to_token: Vec<String>,
-    pub(crate) models: Vec<HashMap<Prefix, HashMap<TokenId, Count>>>,
-    pub(crate) starts: HashMap<Prefix, Count>,
+pub struct MarkovChain {
+    pub ngram_order: usize,
+    pub token_to_id: HashMap<String, TokenId>,
+    pub id_to_token: Vec<String>,
+    pub models: Vec<HashMap<Prefix, HashMap<TokenId, Count>>>,
+    pub starts: HashMap<Prefix, Count>,
 }
 
 impl MarkovChain {
-    pub(crate) fn new(ngram_order: usize) -> Result<Self, DynError> {
+    pub fn new(ngram_order: usize) -> Result<Self, MarkovError> {
         validate_ngram_order(ngram_order, "ngram_order")?;
 
         let mut token_to_id = HashMap::new();
@@ -83,7 +98,7 @@ impl MarkovChain {
         })
     }
 
-    pub(crate) fn train_tokens(&mut self, tokens: &[String]) -> Result<(), DynError> {
+    pub fn train_tokens(&mut self, tokens: &[String]) -> Result<(), MarkovError> {
         if tokens.is_empty() {
             return Ok(());
         }
@@ -136,7 +151,7 @@ impl MarkovChain {
     }
 
     #[cfg(test)]
-    pub(crate) fn generate_sentence<R: Rng + ?Sized>(
+    pub fn generate_sentence<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
         max_words: usize,
@@ -147,7 +162,7 @@ impl MarkovChain {
         )
     }
 
-    pub(crate) fn generate_sentence_with_options<R: Rng + ?Sized>(
+    pub fn generate_sentence_with_options<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
         options: GenerationOptions,
@@ -246,7 +261,7 @@ impl MarkovChain {
         Some(())
     }
 
-    fn intern_token(&mut self, token: &str) -> Result<TokenId, DynError> {
+    fn intern_token(&mut self, token: &str) -> Result<TokenId, MarkovError> {
         if let Some(token_id) = self.token_to_id.get(token).copied() {
             return Ok(token_id);
         }
@@ -353,7 +368,7 @@ fn increment_nested_count<K>(
 mod tests {
     use std::collections::HashMap;
 
-    use crate::config::DynError;
+    use crate::MarkovError;
     use crate::test_support::{ensure, ensure_eq};
     use rand::{SeedableRng, rngs::StdRng};
 
@@ -362,7 +377,7 @@ mod tests {
     };
 
     #[test]
-    fn trains_and_generates_sentence_without_spaces() -> Result<(), DynError> {
+    fn trains_and_generates_sentence_without_spaces() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
         chain.train_tokens(&tokens(["今日", "は", "良い", "天気", "です", "ね"]))?;
         chain.train_tokens(&tokens(["今日", "は", "少し", "寒い", "です", "ね"]))?;
@@ -388,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn learns_single_token_sentence() -> Result<(), DynError> {
+    fn learns_single_token_sentence() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
         chain.train_tokens(&tokens(["草"]))?;
 
@@ -406,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_empty_tokens() -> Result<(), DynError> {
+    fn ignores_empty_tokens() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
         chain.train_tokens(&[])?;
 
@@ -418,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn temperature_changes_sampling_bias() -> Result<(), DynError> {
+    fn temperature_changes_sampling_bias() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
 
         for _ in 0..120 {
@@ -446,7 +461,7 @@ mod tests {
     }
 
     #[test]
-    fn eos_can_be_deferred_until_min_words() -> Result<(), DynError> {
+    fn eos_can_be_deferred_until_min_words() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
         chain.train_tokens(&tokens(["x"]))?;
 
@@ -463,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_generation_options() -> Result<(), DynError> {
+    fn rejects_invalid_generation_options() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
         chain.train_tokens(&tokens(["x"]))?;
 
@@ -479,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn stores_start_prefix_using_first_token() -> Result<(), DynError> {
+    fn stores_start_prefix_using_first_token() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
         chain.train_tokens(&tokens(["a", "b"]))?;
 
@@ -503,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn emits_seeded_start_token_before_first_transition() -> Result<(), DynError> {
+    fn emits_seeded_start_token_before_first_transition() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(DEFAULT_NGRAM_ORDER)?;
 
         add_token(&mut chain, 2, "a");
@@ -536,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn backoff_walks_all_levels_from_seven_to_one() -> Result<(), DynError> {
+    fn backoff_walks_all_levels_from_seven_to_one() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(7)?;
 
         for (token_id, token) in [
@@ -584,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn trains_only_up_to_configured_ngram_order() -> Result<(), DynError> {
+    fn trains_only_up_to_configured_ngram_order() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(3)?;
         chain.train_tokens(&tokens(["a", "b", "c", "d"]))?;
 
@@ -605,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn trains_requested_model_count_for_order_seven() -> Result<(), DynError> {
+    fn trains_requested_model_count_for_order_seven() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(7)?;
         chain.train_tokens(&tokens(["a", "b", "c", "d", "e", "f", "g"]))?;
 
@@ -618,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn start_seed_uses_configured_prefix() -> Result<(), DynError> {
+    fn start_seed_uses_configured_prefix() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(2)?;
 
         for (token_id, token) in [(2, "a"), (3, "b"), (4, "c")] {
@@ -642,7 +657,7 @@ mod tests {
     }
 
     #[test]
-    fn backoff_starts_from_configured_ngram_order() -> Result<(), DynError> {
+    fn backoff_starts_from_configured_ngram_order() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(3)?;
 
         for (token_id, token) in [(2, "a"), (3, "b"), (4, "c")] {
@@ -677,7 +692,7 @@ mod tests {
         order: usize,
         prefix: Prefix,
         edges: HashMap<TokenId, Count>,
-    ) -> Result<(), DynError> {
+    ) -> Result<(), MarkovError> {
         let model = chain
             .models
             .get_mut(order.saturating_sub(1))
@@ -689,7 +704,7 @@ mod tests {
     fn model(
         chain: &MarkovChain,
         order: usize,
-    ) -> Result<&HashMap<Prefix, HashMap<TokenId, Count>>, DynError> {
+    ) -> Result<&HashMap<Prefix, HashMap<TokenId, Count>>, MarkovError> {
         chain
             .models
             .get(order.saturating_sub(1))

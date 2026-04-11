@@ -40,7 +40,7 @@ impl Tokenizer {
         let tokenizer = self
             .lindera_tokenizer
             .as_ref()
-            .ok_or("lindera tokenizer is not initialized")?;
+            .ok_or_else(|| anyhow::anyhow!("lindera tokenizer is not initialized"))?;
 
         let tokens = tokenizer
             .tokenize(text)?
