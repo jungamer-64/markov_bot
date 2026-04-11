@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rand::{Rng, RngExt};
 
-use super::{Count, DEFAULT_GENERATION_TEMPERATURE, EOS_ID, TokenId};
+use super::{Count, DEFAULT_GENERATION_TEMPERATURE, EOS_ID, Prefix6, TokenId};
 
 #[derive(Debug)]
 struct AliasTable<K> {
@@ -12,10 +12,10 @@ struct AliasTable<K> {
 }
 
 pub(super) fn choose_weighted_prefix<R: Rng + ?Sized>(
-    starts: &HashMap<[TokenId; 3], Count>,
+    starts: &HashMap<Prefix6, Count>,
     rng: &mut R,
     temperature: f64,
-) -> Option<[TokenId; 3]> {
+) -> Option<Prefix6> {
     let mut entries = starts
         .iter()
         .filter_map(|(prefix, count)| (*count > 0).then_some((*prefix, *count)))

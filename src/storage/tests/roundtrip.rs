@@ -52,6 +52,18 @@ fn save_and_load_roundtrip() -> Result<(), DynError> {
             !loaded.starts.is_empty(),
             "loaded chain should contain start prefixes",
         )?;
+        ensure(
+            !loaded.model6.is_empty(),
+            "loaded chain should contain model6 data",
+        )?;
+        ensure(
+            !loaded.model5.is_empty(),
+            "loaded chain should contain model5 data",
+        )?;
+        ensure(
+            !loaded.model4.is_empty(),
+            "loaded chain should contain model4 data",
+        )?;
 
         let mut left_rng = StdRng::seed_from_u64(7);
         let mut right_rng = StdRng::seed_from_u64(7);
@@ -93,6 +105,18 @@ fn save_and_load_roundtrip_with_mode_auto() -> Result<(), DynError> {
             !loaded.starts.is_empty(),
             "loaded chain should contain start prefixes",
         )?;
+        ensure(
+            !loaded.model6.is_empty(),
+            "loaded chain should contain model6 data",
+        )?;
+        ensure(
+            !loaded.model5.is_empty(),
+            "loaded chain should contain model5 data",
+        )?;
+        ensure(
+            !loaded.model4.is_empty(),
+            "loaded chain should contain model4 data",
+        )?;
 
         let mut left_rng = StdRng::seed_from_u64(7);
         let mut right_rng = StdRng::seed_from_u64(7);
@@ -133,17 +157,24 @@ fn pruning_roundtrip_keeps_remaining_start_and_backoff_data() -> Result<(), DynE
         };
 
         ensure_eq(
-            &loaded.starts.get(&[BOS_ID, BOS_ID, keep_id]),
+            &loaded
+                .starts
+                .get(&[BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, keep_id]),
             &Some(&2),
             "retained start prefix should preserve its cumulative count",
         )?;
         ensure(
-            !loaded.starts.contains_key(&[BOS_ID, BOS_ID, drop_id]),
+            !loaded
+                .starts
+                .contains_key(&[BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, drop_id]),
             "pruned start prefix should be removed",
         )?;
 
-        let Some(start_edges) = loaded.model3.get(&[BOS_ID, BOS_ID, BOS_ID]) else {
-            return Err("model3 start prefix should exist".into());
+        let Some(start_edges) = loaded
+            .model6
+            .get(&[BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID])
+        else {
+            return Err("model6 start prefix should exist".into());
         };
         ensure_eq(
             &start_edges.get(&keep_id),
@@ -153,6 +184,33 @@ fn pruning_roundtrip_keeps_remaining_start_and_backoff_data() -> Result<(), DynE
         ensure(
             !start_edges.contains_key(&drop_id),
             "pruned start edge should be removed",
+        )?;
+
+        let Some(model5_edges) = loaded.model5.get(&[BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID])
+        else {
+            return Err("model5 start prefix should exist".into());
+        };
+        ensure_eq(
+            &model5_edges.get(&keep_id),
+            &Some(&2),
+            "retained model5 start edge should preserve its cumulative count",
+        )?;
+        ensure(
+            !model5_edges.contains_key(&drop_id),
+            "pruned model5 start edge should be removed",
+        )?;
+
+        let Some(model4_edges) = loaded.model4.get(&[BOS_ID, BOS_ID, BOS_ID, BOS_ID]) else {
+            return Err("model4 start prefix should exist".into());
+        };
+        ensure_eq(
+            &model4_edges.get(&keep_id),
+            &Some(&2),
+            "retained model4 start edge should preserve its cumulative count",
+        )?;
+        ensure(
+            !model4_edges.contains_key(&drop_id),
+            "pruned model4 start edge should be removed",
         )?;
         Ok(())
     })

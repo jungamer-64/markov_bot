@@ -1,12 +1,254 @@
+use crate::markov::{Prefix3, Prefix4, Prefix5, Prefix6};
+
 use super::super::super::{
-    DynError, EdgeRecord, Model1Sections, Model2Sections, Model3Sections, StartRecord, TokenId,
-    usize_from_u32, validate_token_id,
+    DynError, EdgeRecord, Model1Sections, Model2Sections, Model3Sections, Model4Sections,
+    Model5Sections, Model6Sections, StartRecord, usize_from_u32, validate_token_id,
 };
+
+pub(super) fn validate_and_build_model6_keys(
+    model: &Model6Sections,
+    token_count: u32,
+) -> Result<Vec<Prefix6>, DynError> {
+    let mut full_prefixes = vec![[0_u32; 6]; model.prefixes.len()];
+    let mut assigned = vec![false; model.prefixes.len()];
+    let mut previous_pair = None;
+
+    for pair in &model.pairs {
+        validate_token_id(pair.w1, token_count, "model6 pair.w1")?;
+        validate_token_id(pair.w2, token_count, "model6 pair.w2")?;
+        validate_token_id(pair.w3, token_count, "model6 pair.w3")?;
+        validate_token_id(pair.w4, token_count, "model6 pair.w4")?;
+        validate_token_id(pair.w5, token_count, "model6 pair.w5")?;
+
+        let current_pair = (pair.w1, pair.w2, pair.w3, pair.w4, pair.w5);
+        if let Some(previous) = previous_pair
+            && current_pair <= previous
+        {
+            return Err("model6 pair records are not strictly sorted".into());
+        }
+        previous_pair = Some(current_pair);
+
+        let prefix_start = usize_from_u32(pair.prefix_start, "model6 prefix start")?;
+        let prefix_len = usize_from_u32(pair.prefix_len, "model6 prefix len")?;
+        let prefix_end = prefix_start
+            .checked_add(prefix_len)
+            .ok_or("model6 prefix range overflow")?;
+
+        if prefix_end > model.prefixes.len() {
+            return Err("model6 pair prefix range is out of bounds".into());
+        }
+
+        let mut previous_w6 = None;
+        for (relative_index, prefix) in model
+            .prefixes
+            .get(prefix_start..prefix_end)
+            .ok_or("model6 pair prefix range is out of bounds")?
+            .iter()
+            .enumerate()
+        {
+            let index = prefix_start + relative_index;
+            let is_assigned = assigned
+                .get_mut(index)
+                .ok_or("model6 pair prefix range is out of bounds")?;
+            if *is_assigned {
+                return Err("model6 pair prefix ranges overlap".into());
+            }
+            validate_token_id(prefix.w6, token_count, "model6 prefix.w6")?;
+
+            if let Some(previous) = previous_w6
+                && prefix.w6 <= previous
+            {
+                return Err("model6 prefix records are not sorted by w6".into());
+            }
+            previous_w6 = Some(prefix.w6);
+
+            validate_prefix_edges(
+                model.edges.as_slice(),
+                prefix.edge_start,
+                prefix.edge_len,
+                prefix.total,
+                token_count,
+                "model6 prefix",
+            )?;
+
+            *full_prefixes
+                .get_mut(index)
+                .ok_or("model6 pair prefix range is out of bounds")? =
+                [pair.w1, pair.w2, pair.w3, pair.w4, pair.w5, prefix.w6];
+            *is_assigned = true;
+        }
+    }
+
+    if assigned.iter().any(|is_assigned| !*is_assigned) {
+        return Err("some model6 prefixes are not covered by pair records".into());
+    }
+
+    Ok(full_prefixes)
+}
+
+pub(super) fn validate_and_build_model5_keys(
+    model: &Model5Sections,
+    token_count: u32,
+) -> Result<Vec<Prefix5>, DynError> {
+    let mut full_prefixes = vec![[0_u32; 5]; model.prefixes.len()];
+    let mut assigned = vec![false; model.prefixes.len()];
+    let mut previous_pair = None;
+
+    for pair in &model.pairs {
+        validate_token_id(pair.w1, token_count, "model5 pair.w1")?;
+        validate_token_id(pair.w2, token_count, "model5 pair.w2")?;
+        validate_token_id(pair.w3, token_count, "model5 pair.w3")?;
+        validate_token_id(pair.w4, token_count, "model5 pair.w4")?;
+
+        let current_pair = (pair.w1, pair.w2, pair.w3, pair.w4);
+        if let Some(previous) = previous_pair
+            && current_pair <= previous
+        {
+            return Err("model5 pair records are not strictly sorted".into());
+        }
+        previous_pair = Some(current_pair);
+
+        let prefix_start = usize_from_u32(pair.prefix_start, "model5 prefix start")?;
+        let prefix_len = usize_from_u32(pair.prefix_len, "model5 prefix len")?;
+        let prefix_end = prefix_start
+            .checked_add(prefix_len)
+            .ok_or("model5 prefix range overflow")?;
+
+        if prefix_end > model.prefixes.len() {
+            return Err("model5 pair prefix range is out of bounds".into());
+        }
+
+        let mut previous_w5 = None;
+        for (relative_index, prefix) in model
+            .prefixes
+            .get(prefix_start..prefix_end)
+            .ok_or("model5 pair prefix range is out of bounds")?
+            .iter()
+            .enumerate()
+        {
+            let index = prefix_start + relative_index;
+            let is_assigned = assigned
+                .get_mut(index)
+                .ok_or("model5 pair prefix range is out of bounds")?;
+            if *is_assigned {
+                return Err("model5 pair prefix ranges overlap".into());
+            }
+            validate_token_id(prefix.w5, token_count, "model5 prefix.w5")?;
+
+            if let Some(previous) = previous_w5
+                && prefix.w5 <= previous
+            {
+                return Err("model5 prefix records are not sorted by w5".into());
+            }
+            previous_w5 = Some(prefix.w5);
+
+            validate_prefix_edges(
+                model.edges.as_slice(),
+                prefix.edge_start,
+                prefix.edge_len,
+                prefix.total,
+                token_count,
+                "model5 prefix",
+            )?;
+
+            *full_prefixes
+                .get_mut(index)
+                .ok_or("model5 pair prefix range is out of bounds")? =
+                [pair.w1, pair.w2, pair.w3, pair.w4, prefix.w5];
+            *is_assigned = true;
+        }
+    }
+
+    if assigned.iter().any(|is_assigned| !*is_assigned) {
+        return Err("some model5 prefixes are not covered by pair records".into());
+    }
+
+    Ok(full_prefixes)
+}
+
+pub(super) fn validate_and_build_model4_keys(
+    model: &Model4Sections,
+    token_count: u32,
+) -> Result<Vec<Prefix4>, DynError> {
+    let mut full_prefixes = vec![[0_u32; 4]; model.prefixes.len()];
+    let mut assigned = vec![false; model.prefixes.len()];
+    let mut previous_pair = None;
+
+    for pair in &model.pairs {
+        validate_token_id(pair.w1, token_count, "model4 pair.w1")?;
+        validate_token_id(pair.w2, token_count, "model4 pair.w2")?;
+        validate_token_id(pair.w3, token_count, "model4 pair.w3")?;
+
+        let current_pair = (pair.w1, pair.w2, pair.w3);
+        if let Some(previous) = previous_pair
+            && current_pair <= previous
+        {
+            return Err("model4 pair records are not strictly sorted".into());
+        }
+        previous_pair = Some(current_pair);
+
+        let prefix_start = usize_from_u32(pair.prefix_start, "model4 prefix start")?;
+        let prefix_len = usize_from_u32(pair.prefix_len, "model4 prefix len")?;
+        let prefix_end = prefix_start
+            .checked_add(prefix_len)
+            .ok_or("model4 prefix range overflow")?;
+
+        if prefix_end > model.prefixes.len() {
+            return Err("model4 pair prefix range is out of bounds".into());
+        }
+
+        let mut previous_w4 = None;
+        for (relative_index, prefix) in model
+            .prefixes
+            .get(prefix_start..prefix_end)
+            .ok_or("model4 pair prefix range is out of bounds")?
+            .iter()
+            .enumerate()
+        {
+            let index = prefix_start + relative_index;
+            let is_assigned = assigned
+                .get_mut(index)
+                .ok_or("model4 pair prefix range is out of bounds")?;
+            if *is_assigned {
+                return Err("model4 pair prefix ranges overlap".into());
+            }
+            validate_token_id(prefix.w4, token_count, "model4 prefix.w4")?;
+
+            if let Some(previous) = previous_w4
+                && prefix.w4 <= previous
+            {
+                return Err("model4 prefix records are not sorted by w4".into());
+            }
+            previous_w4 = Some(prefix.w4);
+
+            validate_prefix_edges(
+                model.edges.as_slice(),
+                prefix.edge_start,
+                prefix.edge_len,
+                prefix.total,
+                token_count,
+                "model4 prefix",
+            )?;
+
+            *full_prefixes
+                .get_mut(index)
+                .ok_or("model4 pair prefix range is out of bounds")? =
+                [pair.w1, pair.w2, pair.w3, prefix.w4];
+            *is_assigned = true;
+        }
+    }
+
+    if assigned.iter().any(|is_assigned| !*is_assigned) {
+        return Err("some model4 prefixes are not covered by pair records".into());
+    }
+
+    Ok(full_prefixes)
+}
 
 pub(super) fn validate_and_build_model3_keys(
     model: &Model3Sections,
     token_count: u32,
-) -> Result<Vec<[TokenId; 3]>, DynError> {
+) -> Result<Vec<Prefix3>, DynError> {
     let mut full_prefixes = vec![[0_u32; 3]; model.prefixes.len()];
     let mut assigned = vec![false; model.prefixes.len()];
     let mut previous_pair = None;
@@ -128,14 +370,14 @@ pub(super) fn validate_model1(model: &Model1Sections, token_count: u32) -> Resul
 
 pub(super) fn validate_starts(
     starts: &[StartRecord],
-    model3_prefix_count: usize,
+    model6_prefix_count: usize,
 ) -> Result<(), DynError> {
     let mut previous_cumulative = 0_u64;
-    let mut seen = vec![false; model3_prefix_count];
+    let mut seen = vec![false; model6_prefix_count];
 
     for record in starts {
         let prefix_id = usize_from_u32(record.prefix_id, "start prefix_id")?;
-        if prefix_id >= model3_prefix_count {
+        if prefix_id >= model6_prefix_count {
             return Err("start prefix_id is out of range".into());
         }
         let seen_entry = seen

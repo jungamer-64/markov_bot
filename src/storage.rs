@@ -15,14 +15,15 @@ mod write;
 mod tests;
 
 use types::{
-    EdgeRecord, FixedRecord, Header, Model1Sections, Model2Sections, Model3PrefixIndex,
-    Model3Sections, Pair2Record, Pair3Record, Prefix1Record, Prefix2Record, Prefix3Record,
-    SectionDescriptor, SectionEntry, SectionKind, SectionTable, StartRecord, StorageSections,
-    VocabSections,
+    EdgeRecord, FixedRecord, Header, Model1Sections, Model2Sections, Model3Sections,
+    Model4Sections, Model5Sections, Model6PrefixIndex, Model6Sections, Pair2Record, Pair3Record,
+    Pair4Record, Pair5Record, Pair6Record, Prefix1Record, Prefix2Record, Prefix3Record,
+    Prefix4Record, Prefix5Record, Prefix6Record, SectionDescriptor, SectionEntry, SectionKind,
+    SectionTable, StartRecord, StorageSections, VocabSections,
 };
 
 const MAGIC: [u8; 8] = *b"MKV3BIN\0";
-const VERSION: u32 = 5;
+const VERSION: u32 = 6;
 const FLAGS: u32 = 0;
 const FLAG_VOCAB_BLOB_RLE: u32 = 1 << 0;
 const FLAG_VOCAB_BLOB_ZSTD: u32 = 1 << 1;
@@ -34,8 +35,8 @@ const CHECKSUM_PLACEHOLDER: u64 = 0;
 
 const HEADER_SIZE: usize = 44;
 const DESCRIPTOR_SIZE: usize = 24;
-const SECTION_COUNT: usize = 11;
-const SECTION_COUNT_U32: u32 = 11;
+const SECTION_COUNT: usize = 20;
+const SECTION_COUNT_U32: u32 = 20;
 const CHECKSUM_SIZE: usize = std::mem::size_of::<u64>();
 const CHECKSUM_OFFSET: usize = HEADER_SIZE - CHECKSUM_SIZE;
 
@@ -43,8 +44,14 @@ const FNV1A64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 const START_RECORD_SIZE: u64 = 12;
+const PAIR6_RECORD_SIZE: u64 = 28;
+const PAIR5_RECORD_SIZE: u64 = 24;
+const PAIR4_RECORD_SIZE: u64 = 20;
 const PAIR3_RECORD_SIZE: u64 = 16;
 const PAIR2_RECORD_SIZE: u64 = 12;
+const PREFIX6_RECORD_SIZE: u64 = 20;
+const PREFIX5_RECORD_SIZE: u64 = 20;
+const PREFIX4_RECORD_SIZE: u64 = 20;
 const PREFIX3_RECORD_SIZE: u64 = 20;
 const EDGE_RECORD_SIZE: u64 = 12;
 const PREFIX2_RECORD_SIZE: u64 = 24;

@@ -1,14 +1,16 @@
 use std::collections::HashMap;
 
+use crate::markov::{Prefix3, Prefix4, Prefix5, Prefix6};
+
 use super::super::super::{
-    Count, DynError, EdgeRecord, Model1Sections, Model2Sections, Model3Sections, StartRecord,
-    TokenId, usize_from_u32,
+    Count, DynError, EdgeRecord, Model1Sections, Model2Sections, Model3Sections, Model4Sections,
+    Model5Sections, Model6Sections, StartRecord, TokenId, usize_from_u32,
 };
 
 pub(super) fn decode_starts(
     starts: &[StartRecord],
-    model3_keys: &[[TokenId; 3]],
-) -> Result<HashMap<[TokenId; 3], Count>, DynError> {
+    model6_keys: &[Prefix6],
+) -> Result<HashMap<Prefix6, Count>, DynError> {
     let mut decoded = HashMap::new();
     let mut previous = 0_u64;
 
@@ -20,7 +22,7 @@ pub(super) fn decode_starts(
         previous = record.cumulative;
 
         let prefix_index = usize_from_u32(record.prefix_id, "start prefix_id")?;
-        let prefix = *model3_keys
+        let prefix = *model6_keys
             .get(prefix_index)
             .ok_or("start prefix_id is out of bounds")?;
 
@@ -33,10 +35,61 @@ pub(super) fn decode_starts(
     Ok(decoded)
 }
 
+pub(super) fn decode_model6(
+    model: &Model6Sections,
+    model6_keys: &[Prefix6],
+) -> Result<HashMap<Prefix6, HashMap<TokenId, Count>>, DynError> {
+    let mut decoded = HashMap::new();
+
+    for (index, prefix) in model.prefixes.iter().enumerate() {
+        let key = *model6_keys
+            .get(index)
+            .ok_or("model6 prefix index is out of bounds")?;
+        let edge_map = decode_edge_map(model.edges.as_slice(), prefix.edge_start, prefix.edge_len)?;
+        decoded.insert(key, edge_map);
+    }
+
+    Ok(decoded)
+}
+
+pub(super) fn decode_model5(
+    model: &Model5Sections,
+    model5_keys: &[Prefix5],
+) -> Result<HashMap<Prefix5, HashMap<TokenId, Count>>, DynError> {
+    let mut decoded = HashMap::new();
+
+    for (index, prefix) in model.prefixes.iter().enumerate() {
+        let key = *model5_keys
+            .get(index)
+            .ok_or("model5 prefix index is out of bounds")?;
+        let edge_map = decode_edge_map(model.edges.as_slice(), prefix.edge_start, prefix.edge_len)?;
+        decoded.insert(key, edge_map);
+    }
+
+    Ok(decoded)
+}
+
+pub(super) fn decode_model4(
+    model: &Model4Sections,
+    model4_keys: &[Prefix4],
+) -> Result<HashMap<Prefix4, HashMap<TokenId, Count>>, DynError> {
+    let mut decoded = HashMap::new();
+
+    for (index, prefix) in model.prefixes.iter().enumerate() {
+        let key = *model4_keys
+            .get(index)
+            .ok_or("model4 prefix index is out of bounds")?;
+        let edge_map = decode_edge_map(model.edges.as_slice(), prefix.edge_start, prefix.edge_len)?;
+        decoded.insert(key, edge_map);
+    }
+
+    Ok(decoded)
+}
+
 pub(super) fn decode_model3(
     model: &Model3Sections,
-    model3_keys: &[[TokenId; 3]],
-) -> Result<HashMap<[TokenId; 3], HashMap<TokenId, Count>>, DynError> {
+    model3_keys: &[Prefix3],
+) -> Result<HashMap<Prefix3, HashMap<TokenId, Count>>, DynError> {
     let mut decoded = HashMap::new();
 
     for (index, prefix) in model.prefixes.iter().enumerate() {

@@ -1,6 +1,7 @@
 use super::super::{
-    DynError, Header, Model1Sections, Model2Sections, Model3Sections, SectionKind, SectionTable,
-    StorageSections, VocabSections, usize_from_u64,
+    DynError, Header, Model1Sections, Model2Sections, Model3Sections, Model4Sections,
+    Model5Sections, Model6Sections, SectionKind, SectionTable, StorageSections, VocabSections,
+    usize_from_u64,
 };
 
 pub(super) mod compression;
@@ -34,6 +35,48 @@ pub(super) fn parse_storage(
             section_bytes(bytes, table, SectionKind::Starts)?,
             SectionKind::Starts.label(),
         )?,
+        model6: Model6Sections {
+            pairs: records::parse_fixed_section(
+                section_bytes(bytes, table, SectionKind::Model6Pairs)?,
+                SectionKind::Model6Pairs.label(),
+            )?,
+            prefixes: records::parse_fixed_section(
+                section_bytes(bytes, table, SectionKind::Model6Prefixes)?,
+                SectionKind::Model6Prefixes.label(),
+            )?,
+            edges: records::parse_fixed_section(
+                section_bytes(bytes, table, SectionKind::Model6Edges)?,
+                SectionKind::Model6Edges.label(),
+            )?,
+        },
+        model5: Model5Sections {
+            pairs: records::parse_fixed_section(
+                section_bytes(bytes, table, SectionKind::Model5Pairs)?,
+                SectionKind::Model5Pairs.label(),
+            )?,
+            prefixes: records::parse_fixed_section(
+                section_bytes(bytes, table, SectionKind::Model5Prefixes)?,
+                SectionKind::Model5Prefixes.label(),
+            )?,
+            edges: records::parse_fixed_section(
+                section_bytes(bytes, table, SectionKind::Model5Edges)?,
+                SectionKind::Model5Edges.label(),
+            )?,
+        },
+        model4: Model4Sections {
+            pairs: records::parse_fixed_section(
+                section_bytes(bytes, table, SectionKind::Model4Pairs)?,
+                SectionKind::Model4Pairs.label(),
+            )?,
+            prefixes: records::parse_fixed_section(
+                section_bytes(bytes, table, SectionKind::Model4Prefixes)?,
+                SectionKind::Model4Prefixes.label(),
+            )?,
+            edges: records::parse_fixed_section(
+                section_bytes(bytes, table, SectionKind::Model4Edges)?,
+                SectionKind::Model4Edges.label(),
+            )?,
+        },
         model3: Model3Sections {
             pairs: records::parse_fixed_section(
                 section_bytes(bytes, table, SectionKind::Model3Pairs)?,

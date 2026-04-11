@@ -19,6 +19,24 @@ pub(super) fn build_section_payloads(
             bytes: encoded_vocab_blob.to_vec(),
         },
         build_fixed_payload(SectionKind::Starts, sections.starts.as_slice())?,
+        build_fixed_payload(SectionKind::Model6Pairs, sections.model6.pairs.as_slice())?,
+        build_fixed_payload(
+            SectionKind::Model6Prefixes,
+            sections.model6.prefixes.as_slice(),
+        )?,
+        build_fixed_payload(SectionKind::Model6Edges, sections.model6.edges.as_slice())?,
+        build_fixed_payload(SectionKind::Model5Pairs, sections.model5.pairs.as_slice())?,
+        build_fixed_payload(
+            SectionKind::Model5Prefixes,
+            sections.model5.prefixes.as_slice(),
+        )?,
+        build_fixed_payload(SectionKind::Model5Edges, sections.model5.edges.as_slice())?,
+        build_fixed_payload(SectionKind::Model4Pairs, sections.model4.pairs.as_slice())?,
+        build_fixed_payload(
+            SectionKind::Model4Prefixes,
+            sections.model4.prefixes.as_slice(),
+        )?,
+        build_fixed_payload(SectionKind::Model4Edges, sections.model4.edges.as_slice())?,
         build_fixed_payload(SectionKind::Model3Pairs, sections.model3.pairs.as_slice())?,
         build_fixed_payload(
             SectionKind::Model3Prefixes,

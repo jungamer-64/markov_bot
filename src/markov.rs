@@ -9,6 +9,14 @@ mod sampling;
 pub(crate) type TokenId = u32;
 pub(crate) type Count = u64;
 
+const MAX_NGRAM_ORDER: usize = 6;
+
+pub(crate) type Prefix6 = [TokenId; 6];
+pub(crate) type Prefix5 = [TokenId; 5];
+pub(crate) type Prefix4 = [TokenId; 4];
+pub(crate) type Prefix3 = [TokenId; 3];
+pub(crate) type Prefix2 = [TokenId; 2];
+
 pub(crate) const BOS_TOKEN: &str = "<BOS>";
 pub(crate) const EOS_TOKEN: &str = "<EOS>";
 
@@ -48,10 +56,13 @@ impl GenerationOptions {
 pub(crate) struct MarkovChain {
     pub(crate) token_to_id: HashMap<String, TokenId>,
     pub(crate) id_to_token: Vec<String>,
-    pub(crate) model3: HashMap<[TokenId; 3], HashMap<TokenId, Count>>,
-    pub(crate) model2: HashMap<[TokenId; 2], HashMap<TokenId, Count>>,
+    pub(crate) model6: HashMap<Prefix6, HashMap<TokenId, Count>>,
+    pub(crate) model5: HashMap<Prefix5, HashMap<TokenId, Count>>,
+    pub(crate) model4: HashMap<Prefix4, HashMap<TokenId, Count>>,
+    pub(crate) model3: HashMap<Prefix3, HashMap<TokenId, Count>>,
+    pub(crate) model2: HashMap<Prefix2, HashMap<TokenId, Count>>,
     pub(crate) model1: HashMap<TokenId, HashMap<TokenId, Count>>,
-    pub(crate) starts: HashMap<[TokenId; 3], Count>,
+    pub(crate) starts: HashMap<Prefix6, Count>,
 }
 
 impl Default for MarkovChain {
@@ -63,6 +74,9 @@ impl Default for MarkovChain {
         Self {
             token_to_id,
             id_to_token: vec![BOS_TOKEN.to_owned(), EOS_TOKEN.to_owned()],
+            model6: HashMap::new(),
+            model5: HashMap::new(),
+            model4: HashMap::new(),
             model3: HashMap::new(),
             model2: HashMap::new(),
             model1: HashMap::new(),
@@ -77,8 +91,8 @@ impl MarkovChain {
             return Ok(());
         }
 
-        let mut sentence = Vec::with_capacity(tokens.len().saturating_add(4));
-        sentence.extend([BOS_ID, BOS_ID, BOS_ID]);
+        let mut sentence = Vec::with_capacity(tokens.len().saturating_add(MAX_NGRAM_ORDER + 1));
+        sentence.extend([BOS_ID; MAX_NGRAM_ORDER]);
 
         for token in tokens {
             let token_id = self.intern_token(token)?;
@@ -87,28 +101,28 @@ impl MarkovChain {
 
         sentence.push(EOS_ID);
 
-        let first_token = *sentence
-            .get(3)
-            .ok_or("trained sentence is missing first token")?;
-        let start_prefix = [
-            *sentence
-                .get(1)
-                .ok_or("trained sentence is missing second token")?,
-            *sentence
-                .get(2)
-                .ok_or("trained sentence is missing third token")?,
-            first_token,
-        ];
-        increment_count(&mut self.starts, start_prefix);
+        let start_slice = sentence
+            .get(1..=MAX_NGRAM_ORDER)
+            .ok_or("trained sentence is missing start prefix")?;
+        increment_count(
+            &mut self.starts,
+            copy_prefix::<6>(start_slice, "trained sentence start prefix")?,
+        );
 
-        for window in sentence.windows(4) {
-            let [w1, w2, w3, next] = <&[TokenId; 4]>::try_from(window)
-                .map_err(|_error| "training window must contain exactly four tokens")?;
-            let prefix3 = [*w1, *w2, *w3];
-            let prefix2 = [*w2, *w3];
-            let prefix1 = *w3;
+        for window in sentence.windows(MAX_NGRAM_ORDER + 1) {
+            let [w1, w2, w3, w4, w5, w6, next] = <&[TokenId; 7]>::try_from(window)
+                .map_err(|_error| "training window must contain exactly seven tokens")?;
+            let prefix6 = [*w1, *w2, *w3, *w4, *w5, *w6];
+            let prefix5 = [*w2, *w3, *w4, *w5, *w6];
+            let prefix4 = [*w3, *w4, *w5, *w6];
+            let prefix3 = [*w4, *w5, *w6];
+            let prefix2 = [*w5, *w6];
+            let prefix1 = *w6;
             let next = *next;
 
+            increment_nested_count(&mut self.model6, prefix6, next);
+            increment_nested_count(&mut self.model5, prefix5, next);
+            increment_nested_count(&mut self.model4, prefix4, next);
             increment_nested_count(&mut self.model3, prefix3, next);
             increment_nested_count(&mut self.model2, prefix2, next);
             increment_nested_count(&mut self.model1, prefix1, next);
@@ -142,7 +156,6 @@ impl MarkovChain {
         let mut generated = Vec::new();
 
         self.seed_generated_tokens_from_context(context, options.max_words, &mut generated)?;
-
         self.collect_generated_tokens(rng, options, &mut context, &mut generated)?;
 
         (!generated.is_empty()).then_some(generated.join(""))
@@ -156,7 +169,7 @@ impl MarkovChain {
         &self,
         rng: &mut R,
         options: GenerationOptions,
-        context: &mut [TokenId; 3],
+        context: &mut Prefix6,
         generated: &mut Vec<String>,
     ) -> Option<()> {
         while generated.len() < options.max_words {
@@ -167,7 +180,9 @@ impl MarkovChain {
                 break;
             }
 
-            *context = [context[1], context[2], next];
+            *context = [
+                context[1], context[2], context[3], context[4], context[5], next,
+            ];
             self.push_generated_token(generated, next)?;
         }
 
@@ -176,7 +191,7 @@ impl MarkovChain {
 
     fn seed_generated_tokens_from_context(
         &self,
-        context: [TokenId; 3],
+        context: Prefix6,
         max_words: usize,
         generated: &mut Vec<String>,
     ) -> Option<()> {
@@ -228,7 +243,7 @@ impl MarkovChain {
 
     fn choose_next_token<R: Rng + ?Sized>(
         &self,
-        context: [TokenId; 3],
+        context: Prefix6,
         rng: &mut R,
         temperature: f64,
         allow_eos: bool,
@@ -247,25 +262,46 @@ impl MarkovChain {
 
     fn choose_with_backoff<R: Rng + ?Sized>(
         &self,
-        context: [TokenId; 3],
+        context: Prefix6,
         rng: &mut R,
         temperature: f64,
         allow_eos: bool,
     ) -> Option<TokenId> {
-        if let Some(edges) = self.model3.get(&context)
+        if let Some(edges) = self.model6.get(&context)
             && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
         {
             return Some(next);
         }
 
-        let suffix2 = [context[1], context[2]];
+        let suffix5 = [context[1], context[2], context[3], context[4], context[5]];
+        if let Some(edges) = self.model5.get(&suffix5)
+            && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
+        {
+            return Some(next);
+        }
+
+        let suffix4 = [context[2], context[3], context[4], context[5]];
+        if let Some(edges) = self.model4.get(&suffix4)
+            && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
+        {
+            return Some(next);
+        }
+
+        let suffix3 = [context[3], context[4], context[5]];
+        if let Some(edges) = self.model3.get(&suffix3)
+            && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
+        {
+            return Some(next);
+        }
+
+        let suffix2 = [context[4], context[5]];
         if let Some(edges) = self.model2.get(&suffix2)
             && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
         {
             return Some(next);
         }
 
-        if let Some(edges) = self.model1.get(&context[2])
+        if let Some(edges) = self.model1.get(&context[5])
             && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, allow_eos)
         {
             return Some(next);
@@ -313,6 +349,12 @@ fn increment_nested_count<K>(
 {
     let candidates = map.entry(prefix).or_default();
     increment_count(candidates, next);
+}
+
+fn copy_prefix<const N: usize>(slice: &[TokenId], context: &str) -> Result<[TokenId; N], DynError> {
+    <&[TokenId; N]>::try_from(slice)
+        .copied()
+        .map_err(|_error| format!("{context} must contain exactly {N} tokens").into())
 }
 
 #[cfg(test)]
@@ -452,12 +494,16 @@ mod tests {
         };
 
         ensure_eq(
-            &chain.starts.get(&[BOS_ID, BOS_ID, a_id]),
+            &chain
+                .starts
+                .get(&[BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, a_id]),
             &Some(&1),
             "start prefix should use the first generated token",
         )?;
         ensure(
-            !chain.starts.contains_key(&[BOS_ID, BOS_ID, BOS_ID]),
+            !chain
+                .starts
+                .contains_key(&[BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID]),
             "pure BOS prefix must not be stored as a start",
         )?;
         Ok(())
@@ -470,7 +516,20 @@ mod tests {
         chain.token_to_id.insert("a".to_owned(), 2);
         chain.id_to_token.push("a".to_owned());
 
-        chain.starts.insert([BOS_ID, BOS_ID, 2], 1);
+        chain
+            .starts
+            .insert([BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, 2], 1);
+        chain.model6.insert(
+            [BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, 2],
+            HashMap::from([(EOS_ID, 1)]),
+        );
+        chain.model5.insert(
+            [BOS_ID, BOS_ID, BOS_ID, BOS_ID, 2],
+            HashMap::from([(EOS_ID, 1)]),
+        );
+        chain
+            .model4
+            .insert([BOS_ID, BOS_ID, BOS_ID, 2], HashMap::from([(EOS_ID, 1)]));
         chain
             .model3
             .insert([BOS_ID, BOS_ID, 2], HashMap::from([(EOS_ID, 1)]));
@@ -487,6 +546,44 @@ mod tests {
             &sentence,
             &Some("a".to_owned()),
             "seeded start token should be emitted before the first transition",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn backoff_walks_all_levels_from_six_to_one() -> Result<(), DynError> {
+        let mut chain = MarkovChain::default();
+
+        for (token_id, token) in [(2, "a"), (3, "b"), (4, "c"), (5, "d"), (6, "e"), (7, "f")] {
+            chain.token_to_id.insert(token.to_owned(), token_id);
+            chain.id_to_token.push(token.to_owned());
+        }
+
+        chain
+            .starts
+            .insert([BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, 2], 1);
+        chain.model6.insert(
+            [BOS_ID, BOS_ID, BOS_ID, BOS_ID, BOS_ID, 2],
+            HashMap::from([(3, 1)]),
+        );
+        chain
+            .model5
+            .insert([BOS_ID, BOS_ID, BOS_ID, 2, 3], HashMap::from([(4, 1)]));
+        chain
+            .model4
+            .insert([BOS_ID, 2, 3, 4], HashMap::from([(5, 1)]));
+        chain.model3.insert([3, 4, 5], HashMap::from([(6, 1)]));
+        chain.model2.insert([5, 6], HashMap::from([(7, 1)]));
+        chain.model1.insert(7, HashMap::from([(EOS_ID, 1)]));
+
+        let mut rng = StdRng::seed_from_u64(321);
+        let sentence =
+            chain.generate_sentence_with_options(&mut rng, GenerationOptions::new(6, 1.0, 0));
+
+        ensure_eq(
+            &sentence,
+            &Some("abcdef".to_owned()),
+            "generation should fall back from model6 down to model1 in order",
         )?;
         Ok(())
     }
