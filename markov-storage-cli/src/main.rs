@@ -1,58 +1,103 @@
 use std::{
     fs::{self, File},
     io::{BufReader, BufWriter, Write},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Parser, Subcommand};
+use clap::{Arg, Command};
 use markov_storage::{StorageSnapshot, decode_v8_snapshot, encode_v8_snapshot};
 
 mod legacy_v6;
 
 const STORAGE_MAGIC: [u8; 8] = *b"MKV3BIN\0";
 
-#[derive(Debug, Parser)]
-#[command(name = "markov-storage")]
-#[command(about = "Inspect, migrate, and edit markov storage files")]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Debug, Subcommand)]
-enum Command {
-    Inspect {
-        #[arg(long)]
-        input: PathBuf,
-    },
-    Export {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-    },
-    Import {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-    },
-    Migrate {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-    },
-}
-
 fn main() -> Result<()> {
-    let cli = Cli::parse();
-    match cli.command {
-        Command::Inspect { input } => inspect_command(input.as_path()),
-        Command::Export { input, output } => export_command(input.as_path(), output.as_path()),
-        Command::Import { input, output } => import_command(input.as_path(), output.as_path()),
-        Command::Migrate { input, output } => migrate_command(input.as_path(), output.as_path()),
+    let matches = Command::new("markov-storage")
+        .about("Inspect, migrate, and edit markov storage files")
+        .subcommand(
+            Command::new("inspect").arg(
+                Arg::new("input")
+                    .long("input")
+                    .required(true),
+            ),
+        )
+        .subcommand(
+            Command::new("export")
+                .arg(
+                    Arg::new("input")
+                        .long("input")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("output")
+                        .long("output")
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            Command::new("import")
+                .arg(
+                    Arg::new("input")
+                        .long("input")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("output")
+                        .long("output")
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            Command::new("migrate")
+                .arg(
+                    Arg::new("input")
+                        .long("input")
+                        .required(true),
+                )
+                .arg(
+                    Arg::new("output")
+                        .long("output")
+                        .required(true),
+                ),
+        )
+        .get_matches();
+
+    match matches.subcommand() {
+        Some(("inspect", sub)) => {
+            let input = sub
+                .get_one::<String>("input")
+                .ok_or_else(|| anyhow!("missing input"))?;
+            inspect_command(Path::new(input))
+        }
+        Some(("export", sub)) => {
+            let input = sub
+                .get_one::<String>("input")
+                .ok_or_else(|| anyhow!("missing input"))?;
+            let output = sub
+                .get_one::<String>("output")
+                .ok_or_else(|| anyhow!("missing output"))?;
+            export_command(Path::new(input), Path::new(output))
+        }
+        Some(("import", sub)) => {
+            let input = sub
+                .get_one::<String>("input")
+                .ok_or_else(|| anyhow!("missing input"))?;
+            let output = sub
+                .get_one::<String>("output")
+                .ok_or_else(|| anyhow!("missing output"))?;
+            import_command(Path::new(input), Path::new(output))
+        }
+        Some(("migrate", sub)) => {
+            let input = sub
+                .get_one::<String>("input")
+                .ok_or_else(|| anyhow!("missing input"))?;
+            let output = sub
+                .get_one::<String>("output")
+                .ok_or_else(|| anyhow!("missing output"))?;
+            migrate_command(Path::new(input), Path::new(output))
+        }
+        _ => bail!("no subcommand provided"),
     }
 }
 

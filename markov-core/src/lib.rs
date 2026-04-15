@@ -3,9 +3,9 @@ use std::{collections::HashMap, hash::Hash};
 use rand::Rng;
 use thiserror::Error;
 
-mod sampling;
+pub mod sampling;
 #[cfg(test)]
-mod test_support;
+pub mod test_support;
 
 pub type TokenId = u32;
 pub type Count = u64;
@@ -38,6 +38,8 @@ impl From<String> for MarkovError {
     }
 }
 
+/// # Errors
+/// Returns `MarkovError::Invalid` if `ngram_order` is 0 or greater than `u32::MAX`.
 pub fn validate_ngram_order(ngram_order: usize, context: &str) -> Result<(), MarkovError> {
     if ngram_order == 0 {
         return Err(format!("{context} must be >= 1").into());
@@ -56,6 +58,7 @@ pub struct GenerationOptions {
 }
 
 impl GenerationOptions {
+    #[must_use]
     pub const fn new(max_words: usize, temperature: f64, min_words_before_eos: usize) -> Self {
         Self {
             max_words,
@@ -82,6 +85,8 @@ pub struct MarkovChain {
 }
 
 impl MarkovChain {
+    /// # Errors
+    /// Returns `MarkovError::Invalid` if `ngram_order` is 0 or greater than `u32::MAX`.
     pub fn new(ngram_order: usize) -> Result<Self, MarkovError> {
         validate_ngram_order(ngram_order, "ngram_order")?;
 
@@ -98,6 +103,8 @@ impl MarkovChain {
         })
     }
 
+    /// # Errors
+    /// Returns `MarkovError::Invalid` if internal bounds or start prefix logic overflows.
     pub fn train_tokens(&mut self, tokens: &[String]) -> Result<(), MarkovError> {
         if tokens.is_empty() {
             return Ok(());

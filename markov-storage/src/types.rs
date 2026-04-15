@@ -47,7 +47,12 @@ impl SectionKind {
     }
 
     pub(super) const fn as_u32(self) -> u32 {
-        self as u32
+        match self {
+            Self::VocabOffsets => 1,
+            Self::VocabBlob => 2,
+            Self::Starts => 3,
+            Self::Model => 4,
+        }
     }
 
     pub(super) const fn label(self) -> &'static str {

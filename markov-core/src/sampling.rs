@@ -11,7 +11,7 @@ struct AliasTable<K> {
     aliases: Vec<usize>,
 }
 
-pub(super) fn choose_weighted_prefix<R: Rng + ?Sized>(
+pub(crate) fn choose_weighted_prefix<R: Rng + ?Sized>(
     starts: &HashMap<Prefix, Count>,
     rng: &mut R,
     temperature: f64,
@@ -25,7 +25,7 @@ pub(super) fn choose_weighted_prefix<R: Rng + ?Sized>(
     choose_weighted_key(entries.as_slice(), rng, temperature)
 }
 
-pub(super) fn choose_weighted_token<R: Rng + ?Sized>(
+pub(crate) fn choose_weighted_token<R: Rng + ?Sized>(
     edges: &HashMap<TokenId, Count>,
     rng: &mut R,
     temperature: f64,

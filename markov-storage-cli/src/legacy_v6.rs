@@ -1,6 +1,6 @@
 use std::{ops::Range, str};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use lz4_flex::block::decompress_into as lz4_decompress_into;
 use markov_storage::{
     SnapshotEdge, SnapshotEntry, SnapshotModel, SnapshotModelEntry, SnapshotSource,
@@ -147,6 +147,31 @@ impl SectionKind {
             Self::Model1Edges => "model1 edges",
         }
     }
+
+    const fn to_index(self) -> usize {
+        match self {
+            Self::VocabOffsets => 0,
+            Self::VocabBlob => 1,
+            Self::Starts => 2,
+            Self::Model6Pairs => 3,
+            Self::Model6Prefixes => 4,
+            Self::Model6Edges => 5,
+            Self::Model5Pairs => 6,
+            Self::Model5Prefixes => 7,
+            Self::Model5Edges => 8,
+            Self::Model4Pairs => 9,
+            Self::Model4Prefixes => 10,
+            Self::Model4Edges => 11,
+            Self::Model3Pairs => 12,
+            Self::Model3Prefixes => 13,
+            Self::Model3Edges => 14,
+            Self::Model2Pairs => 15,
+            Self::Model2Prefixes => 16,
+            Self::Model2Edges => 17,
+            Self::Model1Prefixes => 18,
+            Self::Model1Edges => 19,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -163,7 +188,7 @@ struct SectionTable {
 impl SectionTable {
     fn entry(&self, kind: SectionKind) -> Result<&SectionEntry> {
         self.entries
-            .get(kind as usize - 1)
+            .get(kind.to_index())
             .ok_or_else(|| anyhow!("section table is missing {}", kind.label()))
     }
 }
@@ -482,6 +507,7 @@ impl FixedRecord for EdgeRecord {
     }
 }
 
+#[allow(clippy::redundant_pub_crate)]
 pub(super) fn decode_snapshot(bytes: &[u8]) -> Result<StorageSnapshot> {
     let header = validate_header(bytes)?;
     let table = build_section_table(bytes, &header)?;
@@ -624,7 +650,7 @@ fn validate_header(bytes: &[u8]) -> Result<Header> {
         );
     }
 
-    let expected_checksum = compute_checksum(bytes)?;
+    let expected_checksum = compute_checksum(bytes);
     if header.checksum != expected_checksum {
         bail!(
             "checksum mismatch: header={}, expected={expected_checksum}",
@@ -709,6 +735,8 @@ fn build_section_table(bytes: &[u8], header: &Header) -> Result<SectionTable> {
     Ok(SectionTable { entries })
 }
 
+// ALLOW: レガシーフォーマット解析コードのため分割は避ける
+#[allow(clippy::too_many_lines)]
 fn parse_storage(bytes: &[u8], header: &Header, table: &SectionTable) -> Result<StorageSections> {
     let vocab_offsets = parse_u64_section(
         section_bytes(bytes, table.entry(SectionKind::VocabOffsets)?)?,
@@ -968,7 +996,11 @@ fn build_model6_keys(model: &Model6Sections, token_count: u32) -> Result<Vec<Vec
         }
 
         let mut previous_w6 = None;
-        for (relative_index, prefix) in model.prefixes[prefix_start..prefix_end].iter().enumerate()
+        let prefix_slice = model
+            .prefixes
+            .get(prefix_start..prefix_end)
+            .context("model6 prefixes range")?;
+        for (relative_index, prefix) in prefix_slice.iter().enumerate()
         {
             let index = prefix_start + relative_index;
             let is_assigned = assigned
@@ -994,7 +1026,10 @@ fn build_model6_keys(model: &Model6Sections, token_count: u32) -> Result<Vec<Vec
                 "model6 prefix",
             )?;
 
-            full_prefixes[index] = vec![pair.w1, pair.w2, pair.w3, pair.w4, pair.w5, prefix.w6];
+            *full_prefixes
+                .get_mut(index)
+                .context("model6 prefix assignment")? =
+                vec![pair.w1, pair.w2, pair.w3, pair.w4, pair.w5, prefix.w6];
             *is_assigned = true;
         }
     }
@@ -1037,7 +1072,11 @@ fn build_model5_keys(model: &Model5Sections, token_count: u32) -> Result<Vec<Vec
         }
 
         let mut previous_w5 = None;
-        for (relative_index, prefix) in model.prefixes[prefix_start..prefix_end].iter().enumerate()
+        let prefix_slice = model
+            .prefixes
+            .get(prefix_start..prefix_end)
+            .context("model5 prefixes range")?;
+        for (relative_index, prefix) in prefix_slice.iter().enumerate()
         {
             let index = prefix_start + relative_index;
             let is_assigned = assigned
@@ -1063,7 +1102,10 @@ fn build_model5_keys(model: &Model5Sections, token_count: u32) -> Result<Vec<Vec
                 "model5 prefix",
             )?;
 
-            full_prefixes[index] = vec![pair.w1, pair.w2, pair.w3, pair.w4, prefix.w5];
+            *full_prefixes
+                .get_mut(index)
+                .context("model5 prefix assignment")? =
+                vec![pair.w1, pair.w2, pair.w3, pair.w4, prefix.w5];
             *is_assigned = true;
         }
     }
@@ -1105,7 +1147,11 @@ fn build_model4_keys(model: &Model4Sections, token_count: u32) -> Result<Vec<Vec
         }
 
         let mut previous_w4 = None;
-        for (relative_index, prefix) in model.prefixes[prefix_start..prefix_end].iter().enumerate()
+        let prefix_slice = model
+            .prefixes
+            .get(prefix_start..prefix_end)
+            .context("model4 prefixes range")?;
+        for (relative_index, prefix) in prefix_slice.iter().enumerate()
         {
             let index = prefix_start + relative_index;
             let is_assigned = assigned
@@ -1131,7 +1177,10 @@ fn build_model4_keys(model: &Model4Sections, token_count: u32) -> Result<Vec<Vec
                 "model4 prefix",
             )?;
 
-            full_prefixes[index] = vec![pair.w1, pair.w2, pair.w3, prefix.w4];
+            *full_prefixes
+                .get_mut(index)
+                .context("model4 prefix assignment")? =
+                vec![pair.w1, pair.w2, pair.w3, prefix.w4];
             *is_assigned = true;
         }
     }
@@ -1172,7 +1221,11 @@ fn build_model3_keys(model: &Model3Sections, token_count: u32) -> Result<Vec<Vec
         }
 
         let mut previous_w3 = None;
-        for (relative_index, prefix) in model.prefixes[prefix_start..prefix_end].iter().enumerate()
+        let prefix_slice = model
+            .prefixes
+            .get(prefix_start..prefix_end)
+            .context("model3 prefixes range")?;
+        for (relative_index, prefix) in prefix_slice.iter().enumerate()
         {
             let index = prefix_start + relative_index;
             let is_assigned = assigned
@@ -1198,7 +1251,9 @@ fn build_model3_keys(model: &Model3Sections, token_count: u32) -> Result<Vec<Vec
                 "model3 prefix",
             )?;
 
-            full_prefixes[index] = vec![pair.w1, pair.w2, prefix.w3];
+            *full_prefixes
+                .get_mut(index)
+                .context("model3 prefix assignment")? = vec![pair.w1, pair.w2, prefix.w3];
             *is_assigned = true;
         }
     }
@@ -1238,7 +1293,11 @@ fn validate_model2(model: &Model2Sections, token_count: u32) -> Result<()> {
         }
 
         let mut previous_w2 = None;
-        for (prefix, is_assigned) in model.prefixes[prefix_start..prefix_end].iter().zip(
+        let prefix_slice = model
+            .prefixes
+            .get(prefix_start..prefix_end)
+            .context("model2 prefixes range")?;
+        for (prefix, is_assigned) in prefix_slice.iter().zip(
             assigned
                 .iter_mut()
                 .skip(prefix_start)
@@ -1475,7 +1534,8 @@ fn validate_prefix_edges(
 
     let mut previous_next = None;
     let mut previous_cumulative = 0_u64;
-    for edge in &edges[start..end] {
+    let edge_slice = edges.get(start..end).context("edges range")?;
+    for edge in edge_slice {
         validate_token_id(edge.next, token_count, context)?;
         if let Some(previous) = previous_next
             && edge.next <= previous
@@ -1638,7 +1698,7 @@ fn vocab_blob_compression_flags(flags: u32) -> Result<u32> {
     Ok(compression_flags)
 }
 
-fn compute_checksum(bytes: &[u8]) -> Result<u64> {
+fn compute_checksum(bytes: &[u8]) -> u64 {
     let checksum_range = CHECKSUM_OFFSET..(CHECKSUM_OFFSET + std::mem::size_of::<u64>());
     let mut hash = FNV1A64_OFFSET_BASIS;
     for (index, byte) in bytes.iter().enumerate() {
@@ -1650,7 +1710,7 @@ fn compute_checksum(bytes: &[u8]) -> Result<u64> {
         hash ^= u64::from(normalized);
         hash = hash.wrapping_mul(FNV1A64_PRIME);
     }
-    Ok(hash)
+    hash
 }
 
 fn aligned_metadata_end() -> Result<usize> {

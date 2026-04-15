@@ -28,32 +28,52 @@ unicode-segmentation = "1.12.0"
 tempfile = "3"
 
 [workspace.lints.rust]
+# ── 安全性 ───────────────────────────────────────
 unsafe_code = "forbid"
+
+# ── 設計純度 ─────────────────────────────────────
+unreachable_pub = "forbid"
+
+# ── 無駄排除・保守性 ─────────────────────────────
 unused = { level = "deny", priority = -1 }
 dead_code = "deny"
 missing_debug_implementations = "forbid"
-unreachable_pub = "forbid"
 
 [workspace.lints.clippy]
+# ── 全体方針 ─────────────────────────────────────
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "warn", priority = -1 }
+
+# ── 安全性: unsafe・panic・危険操作禁止 ───────────
 undocumented_unsafe_blocks = "forbid"
 unwrap_used = "forbid"
 expect_used = "forbid"
 panic = "forbid"
 panic_in_result_fn = "forbid"
+indexing_slicing = "forbid"
+
+# ── 安全性: 変換の健全性 ─────────────────────────
+as_conversions = "forbid"
+cast_possible_truncation = "forbid"
+cast_possible_wrap = "forbid"
+cast_precision_loss = "forbid"
+cast_sign_loss = "forbid"
+
+# ── 設計純度: エラー設計・分岐の明確性 ────────────
 result_large_err = "forbid"
 error_impl_error = "forbid"
 map_err_ignore = "forbid"
 manual_ok_or = "forbid"
 unreachable = "forbid"
-as_conversions = "forbid"
-cast_possible_truncation ="forbid"
-cast_possible_wrap ="forbid"
-cast_precision_loss ="forbid"
-cast_sign_loss ="forbid"
+wildcard_enum_match_arm = "forbid"
+
+# ── 設計純度: 所有権・可変性の厳格化 ──────────────
 mut_mut = "forbid"
 needless_pass_by_value = "forbid"
 unnecessary_mut_passed = "forbid"
+
+# ── 無駄排除・保守性: 不要コピー・冗長記法排除 ────
 redundant_clone = "forbid"
+clone_on_ref_ptr = "forbid"
+str_to_string = "forbid"

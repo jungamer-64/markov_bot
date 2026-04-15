@@ -1,3 +1,5 @@
+#![allow(clippy::redundant_pub_crate)]
+
 use std::collections::{BTreeSet, HashMap};
 
 use markov_core::{BOS_TOKEN, Count, EOS_TOKEN, MarkovChain, validate_ngram_order};
@@ -84,6 +86,10 @@ pub enum StorageCompressionMode {
 }
 
 impl StorageCompressionMode {
+    /// Parses a storage compression mode from a string.
+    ///
+    /// # Errors
+    /// Returns `StorageError::Invalid` if the input string is not a supported compression mode.
     pub fn parse(raw: &str) -> Result<Self, DynError> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
@@ -98,6 +104,7 @@ impl StorageCompressionMode {
         }
     }
 
+    #[must_use]
     pub const fn as_env_value(self) -> &'static str {
         match self {
             Self::Auto => "auto",
@@ -156,15 +163,24 @@ pub struct SnapshotEdge {
 }
 
 impl StorageSnapshot {
-    pub fn ngram_order(&self) -> usize {
+    #[must_use]
+    pub const fn ngram_order(&self) -> usize {
         self.source.ngram_order
     }
 }
 
+/// Decodes a Markov chain from a byte slice.
+///
+/// # Errors
+/// Returns `StorageError` if decoding fails.
 pub fn decode_v8_chain(bytes: &[u8], expected_ngram_order: usize) -> Result<MarkovChain, DynError> {
     read::decode_chain(bytes, expected_ngram_order)
 }
 
+/// Encodes a Markov chain into a byte vector.
+///
+/// # Errors
+/// Returns `StorageError` if encoding or validation fails.
 pub fn encode_v8_chain(
     chain: &MarkovChain,
     min_edge_count: Count,
@@ -176,10 +192,18 @@ pub fn encode_v8_chain(
     Ok(payload)
 }
 
+/// Decodes a storage snapshot from a byte slice.
+///
+/// # Errors
+/// Returns `StorageError` if decoding fails.
 pub fn decode_v8_snapshot(bytes: &[u8]) -> Result<StorageSnapshot, DynError> {
     read::decode_snapshot(bytes)
 }
 
+/// Encodes a storage snapshot into a byte vector.
+///
+/// # Errors
+/// Returns `StorageError` if encoding or validation fails.
 pub fn encode_v8_snapshot(
     snapshot: &StorageSnapshot,
     compression_mode: StorageCompressionMode,
@@ -188,6 +212,10 @@ pub fn encode_v8_snapshot(
     encode_v8_chain(&chain, 1, compression_mode)
 }
 
+/// Converts a storage snapshot to a Markov chain.
+///
+/// # Errors
+/// Returns `StorageError` if the snapshot is invalid or conversion fails.
 pub fn snapshot_to_chain(snapshot: &StorageSnapshot) -> Result<MarkovChain, DynError> {
     validate_snapshot(snapshot)?;
 
@@ -225,6 +253,10 @@ pub fn snapshot_to_chain(snapshot: &StorageSnapshot) -> Result<MarkovChain, DynE
     })
 }
 
+/// Converts a Markov chain to a storage snapshot.
+///
+/// # Errors
+/// Returns `StorageError` if the chain is invalid or conversion fails.
 pub fn chain_to_snapshot(
     chain: &MarkovChain,
     compression_mode: StorageCompressionMode,

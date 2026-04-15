@@ -1,6 +1,6 @@
 use std::{fs, process::Command};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail, ensure};
 use markov_storage::{
     SnapshotEdge, SnapshotEntry, SnapshotModel, SnapshotModelEntry, SnapshotSource,
     StorageCompressionMode, StorageSnapshot, decode_v8_snapshot, encode_v8_snapshot,
@@ -27,9 +27,9 @@ fn inspect_v8_prints_summary() -> Result<()> {
     let output = run_cli(&["inspect", "--input", input.to_string_lossy().as_ref()])?;
     let stdout = String::from_utf8(output.stdout)?;
 
-    assert!(stdout.contains("version=8"));
-    assert!(stdout.contains("ngram_order=2"));
-    assert!(stdout.contains("model[order=2]: entries=1, edges=1"));
+    ensure!(stdout.contains("version=8"), "stdout should contain version=8");
+    ensure!(stdout.contains("ngram_order=2"), "stdout should contain ngram_order=2");
+    ensure!(stdout.contains("model[order=2]: entries=1, edges=1"), "stdout should contain model summary");
     Ok(())
 }
 
@@ -62,10 +62,10 @@ fn export_then_import_round_trips_v8_snapshot() -> Result<()> {
     ])?;
 
     let rebuilt = decode_v8_snapshot(fs::read(&output)?.as_slice())?;
-    assert_eq!(rebuilt.tokens, expected.tokens);
-    assert_eq!(rebuilt.starts, expected.starts);
-    assert_eq!(rebuilt.models, expected.models);
-    assert_eq!(rebuilt.source.ngram_order, expected.source.ngram_order);
+    ensure!(rebuilt.tokens == expected.tokens, "tokens mismatch");
+    ensure!(rebuilt.starts == expected.starts, "starts mismatch");
+    ensure!(rebuilt.models == expected.models, "models mismatch");
+    ensure!(rebuilt.source.ngram_order == expected.source.ngram_order, "ngram_order mismatch");
     Ok(())
 }
 
@@ -78,9 +78,9 @@ fn inspect_and_migrate_v6_fixture() -> Result<()> {
 
     let inspect = run_cli(&["inspect", "--input", input.to_string_lossy().as_ref()])?;
     let stdout = String::from_utf8(inspect.stdout)?;
-    assert!(stdout.contains("version=6"));
-    assert!(stdout.contains("ngram_order=6"));
-    assert!(stdout.contains("model[order=6]: entries=1, edges=1"));
+    ensure!(stdout.contains("version=6"), "stdout should contain version=6");
+    ensure!(stdout.contains("ngram_order=6"), "stdout should contain ngram_order=6");
+    ensure!(stdout.contains("model[order=6]: entries=1, edges=1"), "stdout should contain model summary");
 
     run_cli(&[
         "migrate",
@@ -92,10 +92,10 @@ fn inspect_and_migrate_v6_fixture() -> Result<()> {
 
     let rebuilt = decode_v8_snapshot(fs::read(&migrated)?.as_slice())?;
     let expected = expected_v6_snapshot();
-    assert_eq!(rebuilt.tokens, expected.tokens);
-    assert_eq!(rebuilt.starts, expected.starts);
-    assert_eq!(rebuilt.models, expected.models);
-    assert_eq!(rebuilt.source.storage_version, 8);
+    ensure!(rebuilt.tokens == expected.tokens, "tokens mismatch");
+    ensure!(rebuilt.starts == expected.starts, "starts mismatch");
+    ensure!(rebuilt.models == expected.models, "models mismatch");
+    ensure!(rebuilt.source.storage_version == 8, "storage_version mismatch");
     Ok(())
 }
 
@@ -117,8 +117,8 @@ fn export_v6_then_import_preserves_semantics() -> Result<()> {
 
     let exported_snapshot: StorageSnapshot =
         serde_json::from_slice(fs::read(&exported)?.as_slice())?;
-    assert_eq!(exported_snapshot.source.storage_version, 6);
-    assert_eq!(exported_snapshot.source.ngram_order, 6);
+    ensure!(exported_snapshot.source.storage_version == 6, "storage_version mismatch");
+    ensure!(exported_snapshot.source.ngram_order == 6, "ngram_order mismatch");
 
     run_cli(&[
         "import",
@@ -130,9 +130,9 @@ fn export_v6_then_import_preserves_semantics() -> Result<()> {
 
     let rebuilt = decode_v8_snapshot(fs::read(&output)?.as_slice())?;
     let expected = expected_v6_snapshot();
-    assert_eq!(rebuilt.tokens, expected.tokens);
-    assert_eq!(rebuilt.starts, expected.starts);
-    assert_eq!(rebuilt.models, expected.models);
+    ensure!(rebuilt.tokens == expected.tokens, "tokens mismatch");
+    ensure!(rebuilt.starts == expected.starts, "starts mismatch");
+    ensure!(rebuilt.models == expected.models, "models mismatch");
     Ok(())
 }
 
@@ -156,7 +156,7 @@ fn rejects_same_input_and_output_path() -> Result<()> {
     }
 
     let stderr = String::from_utf8(output.stderr)?;
-    assert!(stderr.contains("input and output paths must differ"));
+    ensure!(stderr.contains("input and output paths must differ"), "stderr should contain error message");
     Ok(())
 }
 
@@ -173,7 +173,7 @@ fn run_cli(args: &[&str]) -> Result<std::process::Output> {
     Ok(output)
 }
 
-fn binary_path() -> &'static str {
+const fn binary_path() -> &'static str {
     env!("CARGO_BIN_EXE_markov-storage")
 }
 
@@ -325,8 +325,11 @@ fn build_v6_fixture() -> Result<Vec<u8>> {
         bytes.extend_from_slice(body.as_slice());
     }
 
-    let checksum = compute_checksum(bytes.as_slice())?;
-    bytes[CHECKSUM_OFFSET..CHECKSUM_OFFSET + 8].copy_from_slice(checksum.to_le_bytes().as_slice());
+    let checksum = compute_checksum(bytes.as_slice());
+    bytes
+        .get_mut(CHECKSUM_OFFSET..CHECKSUM_OFFSET + 8)
+        .ok_or_else(|| anyhow!("checksum range out of bounds"))?
+        .copy_from_slice(checksum.to_le_bytes().as_slice());
 
     Ok(bytes)
 }
@@ -400,7 +403,7 @@ const fn align_to_eight(value: u64) -> u64 {
     value.next_multiple_of(8)
 }
 
-fn compute_checksum(bytes: &[u8]) -> Result<u64> {
+fn compute_checksum(bytes: &[u8]) -> u64 {
     let mut hash = FNV1A64_OFFSET_BASIS;
     for (index, byte) in bytes.iter().enumerate() {
         let normalized = if (CHECKSUM_OFFSET..CHECKSUM_OFFSET + 8).contains(&index) {
@@ -411,7 +414,7 @@ fn compute_checksum(bytes: &[u8]) -> Result<u64> {
         hash ^= u64::from(normalized);
         hash = hash.wrapping_mul(FNV1A64_PRIME);
     }
-    Ok(hash)
+    hash
 }
 
 fn write_u32(target: &mut Vec<u8>, value: u32) {
