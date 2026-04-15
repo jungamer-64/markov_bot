@@ -14,38 +14,5 @@ zstd = "0.13.3"
 rand = "0.10"
 tempfile = "3"
 
-[lints.rust]
-unsafe_code = "forbid"
-unused = { level = "deny", priority = -1 }
-dead_code = "deny"
-unused_lifetimes = "deny"
-unused_imports = "deny"
-unused_must_use = "deny"
-future_incompatible = { level = "deny", priority = -1 }
-missing_debug_implementations = "forbid"
-unreachable_pub = "forbid"
-
-[lints.clippy]
-all = { level = "forbid", priority = -1 }
-pedantic = { level = "forbid", priority = -1 }
-nursery = { level = "warn", priority = -1 }
-perf = { level = "forbid", priority = -1 }
-redundant-pub-crate = "allow"
-unreachable = "forbid"
-panic = "forbid"
-unwrap_used = "forbid"
-expect_used = "forbid"
-indexing_slicing = "forbid"
-else_if_without_else = "forbid"
-wildcard_enum_match_arm = "forbid"
-clone_on_ref_ptr = "forbid"
-implicit_clone = "forbid"
-str_to_string = "forbid"
-format_collect = "forbid"
-panic_in_result_fn = "forbid"
-unnecessary_wraps = "forbid"
-manual_ok_or = "forbid"
-map_err_ignore = "forbid"
-redundant_clone = "forbid"
-use_debug = "forbid"
-dbg_macro = "forbid"
+[lints]
+workspace = true
