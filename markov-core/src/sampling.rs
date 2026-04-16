@@ -114,8 +114,6 @@ fn scaled_temperature_weight(count: Count, exponent: f64) -> Option<f64> {
     (scaled.is_finite() && scaled > 0.0).then_some(scaled)
 }
 
-const TWO_POW_32: f64 = 4_294_967_296.0;
-
 /// # Panics
 /// Does not panic in practice because the value is guaranteed to be positive.
 fn default_sampling_weight(count: Count) -> Option<f64> {
@@ -126,6 +124,8 @@ fn default_sampling_weight(count: Count) -> Option<f64> {
 
     Some(u64_to_f64_lossy(val))
 }
+
+const TWO_POW_32: f64 = 4_294_967_296.0;
 
 fn u64_to_f64_lossy(val: u64) -> f64 {
     // Convert u64 to f64 without 'as' to comply with forbid(clippy::as_conversions).
