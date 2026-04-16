@@ -2,8 +2,6 @@ mod config;
 mod discord_handler;
 mod tokenizer;
 
-use std::sync::Arc;
-
 use anyhow::Result;
 use config::BotConfig;
 use discord_handler::{AuthorRole, DiscordHandler};
@@ -34,24 +32,26 @@ fn main() -> Result<()> {
 async fn async_main() -> Result<()> {
     let config = BotConfig::from_env()?;
 
-    let http = Arc::new(HttpClient::new(config.discord_token().to_owned()));
-    let current_user_id = http.current_user().await?.model().await?.id;
-    let application_id = http.current_user_application().await?.model().await?.id;
-    let handler = DiscordHandler::new(config.clone(), current_user_id).await?;
-    register_slash_commands(&http, application_id).await?;
-
-    let intents = Intents::GUILDS | Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT;
-    let mut shard = Shard::new(ShardId::ONE, config.discord_token().to_owned(), intents);
+    let token = config.discord_token().as_str().to_owned();
 
     println!(
         "Bot started. target_channel_id=unset(use /set_channel), cooldown={}s, generation<= {} words, temp={}, min_words_before_eos={}, storage_min_edge_count={}, storage_compression={}",
-        config.reply_cooldown_secs(),
+        config.reply_cooldown().get().as_secs(),
         config.max_words().get(),
         config.temperature().get(),
         config.min_words_before_eos().get(),
         config.storage_min_edge_count(),
         config.storage_compression().as_env_value(),
     );
+
+    let http = HttpClient::new(token.clone());
+    let current_user_id = http.current_user().await?.model().await?.id;
+    let application_id = http.current_user_application().await?.model().await?.id;
+    let handler = DiscordHandler::new(config, current_user_id).await?;
+    register_slash_commands(&http, application_id).await?;
+
+    let intents = Intents::GUILDS | Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT;
+    let mut shard = Shard::new(ShardId::ONE, token, intents);
 
     while let Some(item) = shard.next_event(EventTypeFlags::all()).await {
         let event = match item {

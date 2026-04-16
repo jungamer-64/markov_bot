@@ -1,5 +1,6 @@
 use std::{
     path::Path,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -38,7 +39,10 @@ pub(crate) enum HandlerError {
     Tokenizer(#[from] TokenizerError),
 
     #[error("Actor error: {0}")]
-    Actor(String),
+    Actor(#[from] mpsc::error::SendError<HandlerCommand>),
+
+    #[error("Reply channel error: {0}")]
+    Reply(#[from] oneshot::error::RecvError),
 
     #[error("Invalid generation options: {0}")]
     InvalidOptions(String),
@@ -66,7 +70,7 @@ impl AuthorRole {
 }
 
 #[derive(Debug)]
-enum HandlerCommand {
+pub(crate) enum HandlerCommand {
     SetTargetChannel(Id<ChannelMarker>),
     HandleMessage {
         channel_id: Id<ChannelMarker>,
@@ -81,6 +85,7 @@ enum HandlerCommand {
 pub(crate) struct DiscordHandler {
     tokenizer: Tokenizer,
     tx: mpsc::Sender<HandlerCommand>,
+    _handle: Arc<tokio::task::JoinHandle<()>>,
 }
 
 impl DiscordHandler {
@@ -98,7 +103,7 @@ impl DiscordHandler {
         };
 
         let actor = HandlerActor::new(config, current_user_id, state, rx);
-        tokio::spawn(actor.run());
+        let handle = tokio::spawn(actor.run());
 
         let tokenizer = match Tokenizer::new() {
             Ok(t) => t,
@@ -111,6 +116,7 @@ impl DiscordHandler {
         Ok(Self {
             tokenizer,
             tx,
+            _handle: Arc::new(handle),
         })
     }
 
@@ -135,9 +141,9 @@ impl DiscordHandler {
             author_role,
             tokens,
             reply_tx,
-        }).await.map_err(|_error| HandlerError::Actor("handler actor is dead".to_owned()))?;
+        }).await?;
 
-        let reply_text: Option<String> = reply_rx.await.map_err(|_error| HandlerError::Actor("reply channel closed".to_owned()))??;
+        let reply_text: Option<String> = reply_rx.await??;
 
         if let Some(text) = reply_text {
             let _ = http.create_message(channel_id).content(&text).await?;
@@ -217,7 +223,7 @@ impl HandlerActor {
             .await?;
         }
 
-        let cooldown = Duration::from_secs(self.config.reply_cooldown_secs());
+        let cooldown = self.config.reply_cooldown().get();
         if can_reply(self.state.last_reply_at, cooldown) {
             self.state.last_reply_at = Some(Instant::now());
             Ok(Some(self.build_reply_text()?))

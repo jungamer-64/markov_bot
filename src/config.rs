@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf};
+use std::{env, path::PathBuf, time::Duration};
 
 use markov_core::{MaxWords, MinWordsBeforeEos, NgramOrder, Temperature};
 use markov_storage::StorageCompressionMode;
@@ -29,8 +29,33 @@ pub(crate) enum ConfigError {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct DiscordToken(String);
+
+impl DiscordToken {
+    #[must_use]
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ReplyCooldown(Duration);
+
+impl ReplyCooldown {
+    #[must_use]
+    pub(crate) const fn from_secs(secs: u64) -> Self {
+        Self(Duration::from_secs(secs))
+    }
+
+    #[must_use]
+    pub(crate) const fn get(self) -> Duration {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct BotConfig {
-    discord_token: String,
+    discord_token: DiscordToken,
     data_path: PathBuf,
     ngram_order: NgramOrder,
     storage_min_edge_count: u64,
@@ -38,11 +63,11 @@ pub(crate) struct BotConfig {
     max_words: MaxWords,
     temperature: Temperature,
     min_words_before_eos: MinWordsBeforeEos,
-    reply_cooldown_secs: u64,
+    reply_cooldown: ReplyCooldown,
 }
 
 impl BotConfig {
-    pub(crate) fn discord_token(&self) -> &str {
+    pub(crate) const fn discord_token(&self) -> &DiscordToken {
         &self.discord_token
     }
 
@@ -74,8 +99,8 @@ impl BotConfig {
         self.min_words_before_eos
     }
 
-    pub(crate) const fn reply_cooldown_secs(&self) -> u64 {
-        self.reply_cooldown_secs
+    pub(crate) const fn reply_cooldown(&self) -> ReplyCooldown {
+        self.reply_cooldown
     }
 
     pub(crate) fn from_env() -> Result<Self, ConfigError> {
@@ -87,7 +112,7 @@ impl BotConfig {
     where
         F: FnMut(&str) -> Result<String, env::VarError>,
     {
-        let discord_token = required_env_with(&mut get_var, "DISCORD_TOKEN")?;
+        let discord_token = DiscordToken(required_env_with(&mut get_var, "DISCORD_TOKEN")?);
 
         let data_path = get_var("MARKOV_DATA_PATH")
             .map_or_else(|_| PathBuf::from("data/markov_chain.mkv3"), PathBuf::from);
@@ -145,6 +170,7 @@ impl BotConfig {
 
         let reply_cooldown_secs =
             env_parse_or_default_with(&mut get_var, "REPLY_COOLDOWN_SECS", 5_u64)?;
+        let reply_cooldown = ReplyCooldown::from_secs(reply_cooldown_secs);
 
         Ok(Self {
             discord_token,
@@ -155,7 +181,7 @@ impl BotConfig {
             max_words,
             temperature,
             min_words_before_eos,
-            reply_cooldown_secs,
+            reply_cooldown,
         })
     }
 }
@@ -230,7 +256,7 @@ mod tests {
     fn defaults_ngram_order_to_six() -> Result<(), super::ConfigError> {
         let config = config_from_pairs(&[("DISCORD_TOKEN", "token")])?;
         ensure_eq(
-            &config.ngram_order().as_usize().map_err(super::ConfigError::Core)?,
+            &config.ngram_order().get(),
             &6,
             "default ngram order should be 6",
         )
@@ -245,25 +271,24 @@ mod tests {
             config_from_pairs(&[("DISCORD_TOKEN", "token"), ("MARKOV_NGRAM_ORDER", "16")])?;
 
         ensure_eq(
-            &lower.ngram_order().as_usize().map_err(super::ConfigError::Core)?,
+            &lower.ngram_order().get(),
             &1,
             "ngram order 1 should be accepted",
         )?;
         ensure_eq(
-            &upper.ngram_order().as_usize().map_err(super::ConfigError::Core)?,
+            &upper.ngram_order().get(),
             &6,
             "ngram order 6 should be accepted",
         )?;
         ensure_eq(
-            &seven.ngram_order().as_usize().map_err(super::ConfigError::Core)?,
+            &seven.ngram_order().get(),
             &7,
             "ngram order 7 should be accepted",
         )?;
         ensure_eq(
             &sixteen
                 .ngram_order()
-                .as_usize()
-                .map_err(super::ConfigError::Core)?,
+                .get(),
             &16,
             "ngram order 16 should be accepted",
         )?;

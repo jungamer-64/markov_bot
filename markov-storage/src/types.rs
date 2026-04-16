@@ -23,7 +23,7 @@ pub(super) struct Header {
 impl Header {
     pub(super) fn expected_section_count(&self) -> Result<u64, DynError> {
         let order = usize::try_from(self.ngram_order)
-            .map_err(|_| StorageError::Format("ngram_order exceeds usize range".to_owned()))?;
+            .map_err(|err| StorageError::Format(format!("ngram_order exceeds usize range: {err}")))?;
         descriptor_count_for_ngram_order(order)
     }
 }

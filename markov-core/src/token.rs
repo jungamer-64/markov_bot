@@ -64,7 +64,7 @@ impl TokenRegistry {
         }
 
         let id_val = u32::try_from(self.id_to_token.len())
-            .map_err(|_| MarkovError::TokenLimitExceeded)?;
+            .map_err(|err| MarkovError::Boundary(format!("Token count exceeded u32::MAX: {err}")))?;
         let id = TokenId::new(id_val);
 
         self.id_to_token.push(token.to_owned());
@@ -95,12 +95,12 @@ impl TokenRegistry {
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.id_to_token.len()
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.id_to_token.is_empty()
     }
 
@@ -114,7 +114,7 @@ impl TokenRegistry {
             return Err(MarkovError::Boundary("Token registry parts size mismatch".into()));
         }
 
-        if id_to_token.get(0).map(String::as_str) != Some(BOS_TOKEN)
+        if id_to_token.first().map(String::as_str) != Some(BOS_TOKEN)
             || token_to_id.get(BOS_TOKEN) != Some(&BOS_ID)
         {
             return Err(MarkovError::Boundary("BOS token missing or misaligned".into()));

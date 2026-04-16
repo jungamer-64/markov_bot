@@ -448,13 +448,13 @@ fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
         .enumerate()
         .map(|(index, token)| {
             let token_id =
-                TokenId::new(u32::try_from(index).map_err(|_error| StorageError::Format("token count exceeds u32 range".to_owned()))?);
+                TokenId::new(u32::try_from(index).map_err(|err| StorageError::Format(format!("token count exceeds u32 range: {err}")))?);
             Ok((token.clone(), token_id))
         })
         .collect::<Result<HashMap<_, _>, DynError>>()?;
 
     let registry = markov_core::token::TokenRegistry::from_parts(token_to_id, id_to_token)?;
-    let token_count = u32::try_from(registry.len()).map_err(|_| StorageError::Format("token count exceeds u32 range".to_owned()))?;
+    let token_count = u32::try_from(registry.len()).map_err(|err| StorageError::Format(format!("token count exceeds u32 range: {err}")))?;
 
     let starts = decode_starts(
         sections.starts.as_slice(),
