@@ -72,7 +72,7 @@ pub(super) fn write_sample_file_with_settings(
     compression_mode: StorageCompressionMode,
 ) -> Result<TempPath, StorageError> {
     let file_path = temp_file_path(prefix)?;
-    let payload = encode_chain(chain, markov_core::Count(min_edge_count), compression_mode)?;
+    let payload = encode_chain(chain, markov_core::Count::new(min_edge_count), compression_mode)?;
     fs::write(&file_path, payload)?;
     Ok(file_path)
 }

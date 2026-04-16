@@ -212,7 +212,7 @@ pub fn encode_snapshot(
     compression_mode: StorageCompressionMode,
 ) -> Result<Vec<u8>, DynError> {
     let chain = snapshot_to_chain(snapshot)?;
-    encode_chain(&chain, Count(1), compression_mode)
+    encode_chain(&chain, Count::new(1), compression_mode)
 }
 
 /// Converts a storage snapshot to a Markov chain.
@@ -231,9 +231,9 @@ pub fn snapshot_to_chain(snapshot: &StorageSnapshot) -> Result<MarkovChain, DynE
         for entry in &model.entries {
             let mut edges = HashMap::new();
             for edge in &entry.edges {
-                edges.insert(markov_core::TokenId(edge.next), markov_core::Count(edge.count));
+                edges.insert(markov_core::TokenId::new(edge.next), markov_core::Count::new(edge.count));
             }
-            prefixes.insert(markov_core::Prefix::new(entry.prefix.iter().map(|&id| markov_core::TokenId(id)).collect()), edges);
+            prefixes.insert(markov_core::Prefix::new(entry.prefix.iter().map(|&id| markov_core::TokenId::new(id)).collect()), edges);
         }
         let slot = models
             .get_mut(model.order - 1)
@@ -244,7 +244,7 @@ pub fn snapshot_to_chain(snapshot: &StorageSnapshot) -> Result<MarkovChain, DynE
     let starts = snapshot
         .starts
         .iter()
-        .map(|entry| (markov_core::Prefix::new(entry.prefix.iter().map(|&id| markov_core::TokenId(id)).collect()), markov_core::Count(entry.count)))
+        .map(|entry| (markov_core::Prefix::new(entry.prefix.iter().map(|&id| markov_core::TokenId::new(id)).collect()), markov_core::Count::new(entry.count)))
         .collect::<HashMap<_, _>>();
 
     Ok(MarkovChain::from_parts(
@@ -277,8 +277,8 @@ pub fn chain_to_snapshot(
         .starts()
         .iter()
         .map(|(prefix, count)| SnapshotEntry {
-            prefix: prefix.as_slice().iter().map(|&id| id.0).collect(),
-            count: count.0,
+            prefix: prefix.as_slice().iter().map(|&id| id.get()).collect(),
+            count: count.get(),
         })
         .collect::<Vec<_>>();
     starts.sort_unstable_by(|left, right| left.prefix.cmp(&right.prefix));
@@ -292,13 +292,13 @@ pub fn chain_to_snapshot(
                 let mut snapshot_edges = edges
                     .iter()
                     .map(|(next, count)| SnapshotEdge {
-                        next: next.0,
-                        count: count.0,
+                        next: next.get(),
+                        count: count.get(),
                     })
                     .collect::<Vec<_>>();
                 snapshot_edges.sort_unstable_by_key(|edge| edge.next);
                 SnapshotModelEntry {
-                    prefix: prefix.as_slice().iter().map(|&id| id.0).collect(),
+                    prefix: prefix.as_slice().iter().map(|&id| id.get()).collect(),
                     edges: snapshot_edges,
                 }
             })
@@ -369,8 +369,8 @@ fn validate_snapshot(snapshot: &StorageSnapshot) -> Result<(), DynError> {
         }
     }
 
-    if token_to_id.get(BOS_TOKEN) != Some(&markov_core::TokenId(0))
-        || token_to_id.get(EOS_TOKEN) != Some(&markov_core::TokenId(1))
+    if token_to_id.get(BOS_TOKEN) != Some(&markov_core::TokenId::new(0))
+        || token_to_id.get(EOS_TOKEN) != Some(&markov_core::TokenId::new(1))
     {
         return Err(StorageError::Format(
             "snapshot special token ids are invalid".into(),
@@ -439,7 +439,7 @@ fn build_token_index(tokens: &[String]) -> Result<HashMap<String, markov_core::T
     let mut index = HashMap::new();
 
     for (position, token) in tokens.iter().enumerate() {
-        let token_id = markov_core::TokenId(u32_from_usize(position, "token id")?);
+        let token_id = markov_core::TokenId::new(u32_from_usize(position, "token id")?);
 
         if index.insert(token.clone(), token_id).is_some() {
             return Err(format!("duplicate token in vocab: {token}").into());
@@ -483,7 +483,7 @@ fn validate_token_index(chain: &MarkovChain) -> Result<(), DynError> {
     }
 
     for (index, token) in chain.id_to_token().iter().enumerate() {
-        let expected_id = markov_core::TokenId(u32_from_usize(index, "token index")?);
+        let expected_id = markov_core::TokenId::new(u32_from_usize(index, "token index")?);
         let actual_id = chain
             .token_to_id()
             .get(token)

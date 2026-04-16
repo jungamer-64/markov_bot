@@ -23,7 +23,7 @@ pub(super) fn compile_chain(
 ) -> Result<StorageSections, DynError> {
     validate_ngram_order(chain.ngram_order(), "chain ngram order")?;
     validate_special_tokens(chain.id_to_token())?;
-    if min_edge_count.0 == 0 {
+    if min_edge_count.get() == 0 {
         return Err("min_edge_count must be >= 1".into());
     }
 
@@ -170,14 +170,14 @@ fn compile_model(
             let count = candidates
                 .get(next)
                 .ok_or_else(|| format!("model{order} is missing next token {next:?}"))?;
-            if count.0 < min_edge_count.0 {
+            if count.get() < min_edge_count.get() {
                 continue;
             }
 
             cumulative = cumulative
-                .checked_add(count.0)
+                .checked_add(count.get())
                 .ok_or("model edge cumulative count overflow")?;
-            edges.push(EdgeRecord { next: *next, cumulative: Count(cumulative) });
+            edges.push(EdgeRecord { next: *next, cumulative: Count::new(cumulative) });
         }
 
         let edge_len = u32_from_usize(edges.len(), "model edge len")? - edge_start;
@@ -186,7 +186,7 @@ fn compile_model(
                 prefix: prefix.clone(),
                 edge_start,
                 edge_len,
-                total: Count(cumulative),
+                total: Count::new(cumulative),
             });
         }
     }
@@ -218,16 +218,16 @@ fn compile_starts(chain: &MarkovChain) -> Result<Vec<StartRecord>, DynError> {
             .starts()
             .get(prefix)
             .ok_or_else(|| format!("chain starts is missing prefix {prefix:?}"))?;
-        if count.0 == 0 {
+        if count.get() == 0 {
             continue;
         }
 
         cumulative = cumulative
-            .checked_add(count.0)
+            .checked_add(count.get())
             .ok_or("start record cumulative count overflow")?;
         records.push(StartRecord {
             prefix: prefix.clone(),
-            cumulative: Count(cumulative),
+            cumulative: Count::new(cumulative),
         });
     }
 
@@ -383,9 +383,9 @@ fn write_starts_section(
         }
 
         for token_id in record.prefix.as_slice() {
-            write_u32(target, token_id.0);
+            write_u32(target, token_id.get());
         }
-        write_u64(target, record.cumulative.0);
+        write_u64(target, record.cumulative.get());
     }
 
     Ok(())
@@ -413,16 +413,16 @@ fn write_model_section(
         }
 
         for token_id in record.prefix.as_slice() {
-            write_u32(target, token_id.0);
+            write_u32(target, token_id.get());
         }
         write_u32(target, record.edge_start);
         write_u32(target, record.edge_len);
-        write_u64(target, record.total.0);
+        write_u64(target, record.total.get());
     }
 
     for edge in &section.edges {
-        write_u32(target, edge.next.0);
-        write_u64(target, edge.cumulative.0);
+        write_u32(target, edge.next.get());
+        write_u64(target, edge.cumulative.get());
     }
 
     Ok(())

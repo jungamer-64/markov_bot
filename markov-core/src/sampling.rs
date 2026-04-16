@@ -2,7 +2,11 @@ use std::collections::HashMap;
 
 use rand::{Rng, RngExt};
 
-use super::{Count, DEFAULT_GENERATION_TEMPERATURE, EOS_ID, EosPolicy, Prefix, TokenId};
+use super::{
+    DEFAULT_GENERATION_TEMPERATURE,
+    options::EosPolicy,
+    token::{Count, EOS_ID, Prefix, TokenId},
+};
 
 #[derive(Debug)]
 struct AliasTable<K> {
@@ -18,7 +22,7 @@ pub(crate) fn choose_weighted_prefix<R: Rng + ?Sized>(
 ) -> Option<Prefix> {
     let mut entries = starts
         .iter()
-        .filter_map(|(prefix, count)| (count.0 > 0).then_some((prefix.clone(), *count)))
+        .filter_map(|(prefix, count)| (count.get() > 0).then_some((prefix.clone(), *count)))
         .collect::<Vec<_>>();
 
     entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
@@ -34,7 +38,7 @@ pub(crate) fn choose_weighted_token<R: Rng + ?Sized>(
     let mut entries = edges
         .iter()
         .filter_map(|(token, count)| {
-            if count.0 == 0 || (policy == EosPolicy::Forbidden && *token == EOS_ID) {
+            if count.get() == 0 || (policy == EosPolicy::Forbidden && *token == EOS_ID) {
                 return None;
             }
 
@@ -111,11 +115,11 @@ fn scaled_temperature_weight(count: Count, exponent: f64) -> Option<f64> {
 }
 
 fn default_sampling_weight(count: Count) -> Option<f64> {
-    if count.0 == 0 {
+    if count.get() == 0 {
         return None;
     }
 
-    let bounded = u32::try_from(count.0).unwrap_or(u32::MAX);
+    let bounded = u32::try_from(count.get()).unwrap_or(u32::MAX);
     Some(f64::from(bounded))
 }
 

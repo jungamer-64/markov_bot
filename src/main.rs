@@ -33,23 +33,23 @@ fn main() -> Result<(), DynError> {
 async fn async_main() -> Result<(), DynError> {
     let config = BotConfig::from_env()?;
 
-    let http = Arc::new(HttpClient::new(config.discord_token.clone()));
+    let http = Arc::new(HttpClient::new(config.discord_token().to_owned()));
     let current_user_id = http.current_user().await?.model().await?.id;
     let application_id = http.current_user_application().await?.model().await?.id;
     let handler = DiscordHandler::new(config.clone(), current_user_id).await?;
     register_slash_commands(&http, application_id).await?;
 
     let intents = Intents::GUILDS | Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT;
-    let mut shard = Shard::new(ShardId::ONE, config.discord_token, intents);
+    let mut shard = Shard::new(ShardId::ONE, config.discord_token().to_owned(), intents);
 
     println!(
         "Bot started. target_channel_id=unset(use /set_channel), cooldown={}s, generation<= {} words, temp={}, min_words_before_eos={}, storage_min_edge_count={}, storage_compression={}",
-        config.reply_cooldown_secs,
-        config.max_words,
-        config.generation_temperature,
-        config.min_words_before_eos,
-        config.storage_min_edge_count,
-        config.storage_compression.as_env_value(),
+        config.reply_cooldown_secs(),
+        config.max_words(),
+        config.generation_temperature(),
+        config.min_words_before_eos(),
+        config.storage_min_edge_count(),
+        config.storage_compression().as_env_value(),
     );
 
     while let Some(item) = shard.next_event(EventTypeFlags::all()).await {

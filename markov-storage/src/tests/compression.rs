@@ -11,7 +11,7 @@ use crate::{FLAG_VOCAB_BLOB_LZ4_FLEX, FLAG_VOCAB_BLOB_RLE, FLAG_VOCAB_BLOB_ZSTD}
 fn auto_compresses_repeated_vocab_blob_when_helpful() -> Result<(), crate::StorageError> {
     let mut chain = sample_chain_with_order(7)?;
     for i in 0..40 {
-        chain.train_tokens(&[format!("token_{:064}", i)])?;
+        chain.train_tokens(&[format!("token_{i:064}")])?;
     }
 
     let path =

@@ -376,7 +376,7 @@ fn parse_starts_section(bytes: &[u8], ngram_order: usize) -> Result<Vec<StartRec
     for _ in 0..record_count {
         records.push(StartRecord {
             prefix: read_prefix(bytes, &mut cursor, ngram_order)?,
-            cumulative: Count(read_u64_value(bytes, &mut cursor)?),
+            cumulative: Count::new(read_u64_value(bytes, &mut cursor)?),
         });
     }
 
@@ -417,15 +417,15 @@ fn parse_model_section(bytes: &[u8], order: usize) -> Result<ModelSection, DynEr
             prefix: read_prefix(bytes, &mut cursor, order)?,
             edge_start: read_u32_value(bytes, &mut cursor)?,
             edge_len: read_u32_value(bytes, &mut cursor)?,
-            total: Count(read_u64_value(bytes, &mut cursor)?),
+            total: Count::new(read_u64_value(bytes, &mut cursor)?),
         });
     }
 
     let mut edges = Vec::with_capacity(edge_count);
     for _ in 0..edge_count {
         edges.push(EdgeRecord {
-            next: TokenId(read_u32_value(bytes, &mut cursor)?),
-            cumulative: Count(read_u64_value(bytes, &mut cursor)?),
+            next: TokenId::new(read_u32_value(bytes, &mut cursor)?),
+            cumulative: Count::new(read_u64_value(bytes, &mut cursor)?),
         });
     }
 
@@ -439,7 +439,7 @@ fn parse_model_section(bytes: &[u8], order: usize) -> Result<ModelSection, DynEr
 fn read_prefix(bytes: &[u8], cursor: &mut usize, order: usize) -> Result<Prefix, DynError> {
     let mut prefix = Vec::with_capacity(order);
     for _ in 0..order {
-        prefix.push(TokenId(read_u32_value(bytes, cursor)?));
+        prefix.push(TokenId::new(read_u32_value(bytes, cursor)?));
     }
     Ok(Prefix::new(prefix))
 }
@@ -462,7 +462,7 @@ fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
         .enumerate()
         .map(|(index, token)| {
             let token_id =
-                TokenId(u32::try_from(index).map_err(|_error| "token count exceeds u32 range")?);
+                TokenId::new(u32::try_from(index).map_err(|_error| "token count exceeds u32 range")?);
             Ok((token.clone(), token_id))
         })
         .collect::<Result<HashMap<_, _>, DynError>>()?;
@@ -511,11 +511,11 @@ fn decode_starts(
         {
             return Err("start records must be sorted by unique prefix".into());
         }
-        if record.cumulative.0 <= previous_cumulative.0 {
+        if record.cumulative.get() <= previous_cumulative.get() {
             return Err("start records must have strictly increasing cumulative counts".into());
         }
 
-        let count = Count(record.cumulative.0 - previous_cumulative.0);
+        let count = Count::new(record.cumulative.get() - previous_cumulative.get());
         starts.insert(record.prefix.clone(), count);
         previous_prefix = Some(record.prefix.as_slice());
         previous_cumulative = record.cumulative;
@@ -601,7 +601,7 @@ fn decode_model_section(
         let mut previous_next: Option<TokenId> = None;
 
         for edge in edge_slice {
-            validate_token_id(edge.next.0, token_count, "model edge")?;
+            validate_token_id(edge.next.get(), token_count, "model edge")?;
             if let Some(prev_next) = previous_next
                 && prev_next >= edge.next
             {
@@ -611,7 +611,7 @@ fn decode_model_section(
                 )
                 .into());
             }
-            if edge.cumulative.0 <= previous_cumulative.0 {
+            if edge.cumulative.get() <= previous_cumulative.get() {
                 return Err(format!(
                     "model{} edges must have strictly increasing cumulative counts",
                     section.order
@@ -619,15 +619,15 @@ fn decode_model_section(
                 .into());
             }
 
-            edges.insert(edge.next, Count(edge.cumulative.0 - previous_cumulative.0));
+            edges.insert(edge.next, Count::new(edge.cumulative.get() - previous_cumulative.get()));
             previous_cumulative = edge.cumulative;
             previous_next = Some(edge.next);
         }
 
-        if previous_cumulative.0 != record.total.0 {
+        if previous_cumulative.get() != record.total.get() {
             return Err(format!(
                 "model{} total mismatch: expected {}, got {}",
-                section.order, previous_cumulative.0, record.total.0
+                section.order, previous_cumulative.get(), record.total.get()
             )
             .into());
         }
@@ -683,7 +683,7 @@ fn validate_vocab_offsets(offsets: &[u64]) -> Result<(), DynError> {
 
 fn validate_prefix(prefix: &[TokenId], token_count: u32, context: &str) -> Result<(), DynError> {
     for token_id in prefix {
-        validate_token_id(token_id.0, token_count, context)?;
+        validate_token_id(token_id.get(), token_count, context)?;
     }
 
     Ok(())

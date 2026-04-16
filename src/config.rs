@@ -8,18 +8,54 @@ pub(crate) type DynError = AnyhowError;
 
 #[derive(Clone, Debug)]
 pub(super) struct BotConfig {
-    pub(crate) discord_token: String,
-    pub(crate) data_path: PathBuf,
-    pub(crate) ngram_order: usize,
-    pub(crate) storage_min_edge_count: u64,
-    pub(crate) storage_compression: StorageCompressionMode,
-    pub(crate) max_words: usize,
-    pub(crate) generation_temperature: f64,
-    pub(crate) min_words_before_eos: usize,
-    pub(crate) reply_cooldown_secs: u64,
+    discord_token: String,
+    data_path: PathBuf,
+    ngram_order: usize,
+    storage_min_edge_count: u64,
+    storage_compression: StorageCompressionMode,
+    max_words: usize,
+    generation_temperature: f64,
+    min_words_before_eos: usize,
+    reply_cooldown_secs: u64,
 }
 
 impl BotConfig {
+    pub(crate) fn discord_token(&self) -> &str {
+        &self.discord_token
+    }
+
+    pub(crate) fn data_path(&self) -> &PathBuf {
+        &self.data_path
+    }
+
+    pub(crate) fn ngram_order(&self) -> usize {
+        self.ngram_order
+    }
+
+    pub(crate) fn storage_min_edge_count(&self) -> u64 {
+        self.storage_min_edge_count
+    }
+
+    pub(crate) fn storage_compression(&self) -> StorageCompressionMode {
+        self.storage_compression
+    }
+
+    pub(crate) fn max_words(&self) -> usize {
+        self.max_words
+    }
+
+    pub(crate) fn generation_temperature(&self) -> f64 {
+        self.generation_temperature
+    }
+
+    pub(crate) fn min_words_before_eos(&self) -> usize {
+        self.min_words_before_eos
+    }
+
+    pub(crate) fn reply_cooldown_secs(&self) -> u64 {
+        self.reply_cooldown_secs
+    }
+
     pub(crate) fn from_env() -> Result<Self, DynError> {
         dotenvy::dotenv().ok();
         Self::from_env_with(|key| env::var(key))
