@@ -9,11 +9,32 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
+struct Models(Vec<HashMap<Prefix, HashMap<TokenId, Count>>>);
+
+impl Models {
+    fn new(order: NgramOrder) -> Result<Self, MarkovError> {
+        Ok(Self(vec![HashMap::new(); order.as_usize()?]))
+    }
+
+    fn get_mut(&mut self, index: usize) -> Result<&mut HashMap<Prefix, HashMap<TokenId, Count>>, MarkovError> {
+        self.0.get_mut(index).ok_or(MarkovError::ModelIndexOutOfBounds)
+    }
+
+    fn get(&self, index: usize) -> Result<&HashMap<Prefix, HashMap<TokenId, Count>>, MarkovError> {
+        self.0.get(index).ok_or(MarkovError::ModelIndexOutOfBounds)
+    }
+
+    fn as_slice(&self) -> &[HashMap<Prefix, HashMap<TokenId, Count>>] {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct MarkovChain {
     order: NgramOrder,
     token_to_id: HashMap<String, TokenId>,
     id_to_token: Vec<String>,
-    models: Vec<HashMap<Prefix, HashMap<TokenId, Count>>>,
+    models: Models,
     starts: HashMap<Prefix, Count>,
 }
 
@@ -27,24 +48,24 @@ impl MarkovChain {
 
         let mut id_to_token = vec![String::new(); 2];
         let bos_idx = usize::try_from(BOS_ID.get())
-            .map_err(|_err| MarkovError::Boundary("BOS_ID conversion failed".into()))?;
+            .map_err(|_| MarkovError::Boundary("BOS_ID conversion failed".into()))?;
         let bos_slot = id_to_token
             .get_mut(bos_idx)
-            .ok_or_else(|| MarkovError::Boundary("BOS_ID is out of bounds".into()))?;
+            .ok_or(MarkovError::Boundary("BOS_ID is out of bounds".into()))?;
         BOS_TOKEN.clone_into(bos_slot);
 
         let eos_idx = usize::try_from(EOS_ID.get())
-            .map_err(|_err| MarkovError::Boundary("EOS_ID conversion failed".into()))?;
+            .map_err(|_| MarkovError::Boundary("EOS_ID conversion failed".into()))?;
         let eos_slot = id_to_token
             .get_mut(eos_idx)
-            .ok_or_else(|| MarkovError::Boundary("EOS_ID is out of bounds".into()))?;
+            .ok_or(MarkovError::Boundary("EOS_ID is out of bounds".into()))?;
         EOS_TOKEN.clone_into(eos_slot);
 
         Ok(Self {
             order,
             token_to_id,
             id_to_token,
-            models: vec![HashMap::new(); order.as_usize()?],
+            models: Models::new(order)?,
             starts: HashMap::new(),
         })
     }
@@ -71,7 +92,7 @@ impl MarkovChain {
 
     #[must_use]
     pub fn models(&self) -> &[HashMap<Prefix, HashMap<TokenId, Count>>] {
-        &self.models
+        self.models.as_slice()
     }
 
     /// # Errors
@@ -95,7 +116,7 @@ impl MarkovChain {
             order,
             token_to_id,
             id_to_token,
-            models,
+            models: Models(models),
             starts,
         })
     }
@@ -116,28 +137,20 @@ impl MarkovChain {
         ids.push(EOS_ID);
 
         // Update starts
-        let start_range = ids.get(0..order_usize).ok_or_else(|| {
-            MarkovError::Boundary("failed to get start prefix range".into())
-        })?;
+        let start_range = ids.get(0..order_usize).ok_or(MarkovError::StartPrefixRangeError)?;
         let start_prefix = Prefix::new(start_range.to_vec());
         let start_count = self.starts.entry(start_prefix).or_insert(Count::ZERO);
         *start_count = start_count.saturating_add(1);
 
         // Update models
         for window in ids.windows(order_usize + 1) {
-            let next = *window.last().ok_or_else(|| {
-                MarkovError::Boundary("training window is unexpectedly empty".into())
-            })?;
+            let next = *window.last().ok_or(MarkovError::EmptyTrainingWindow)?;
 
             for order_val in 1..=order_usize {
                 let prefix_start = order_usize - order_val;
-                let prefix_range = window.get(prefix_start..order_usize).ok_or_else(|| {
-                    MarkovError::Boundary("training prefix range is invalid".into())
-                })?;
+                let prefix_range = window.get(prefix_start..order_usize).ok_or(MarkovError::InvalidTrainingPrefixRange)?;
                 let prefix = Prefix::new(prefix_range.to_vec());
-                let model = self.models.get_mut(order_val - 1).ok_or_else(|| {
-                    MarkovError::Boundary("training model index is out of bounds".into())
-                })?;
+                let model = self.models.get_mut(order_val - 1)?;
                 increment_nested_count(model, prefix, next);
             }
         }
@@ -260,7 +273,7 @@ impl MarkovChain {
             let prefix_start = context.len().checked_sub(order_val)?;
             let prefix_slice = context.get(prefix_start..)?;
             let prefix = Prefix::new(prefix_slice.to_vec());
-            let model = self.models.get(order_val - 1)?;
+            let model = self.models.get(order_val - 1).ok()?;
             if let Some(edges) = model.get(&prefix)
                 && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, policy)
             {
@@ -278,7 +291,7 @@ impl MarkovChain {
     ) -> Option<TokenId> {
         let mut totals = HashMap::<TokenId, Count>::new();
 
-        for edges in self.models.first()?.values() {
+        for edges in self.models.get(0).ok()?.values() {
             for (token, count) in edges {
                 if *token == EOS_ID || count.get() == 0 {
                     continue;
@@ -298,7 +311,7 @@ impl MarkovChain {
         }
 
         let id_val = u32::try_from(self.id_to_token.len())
-            .map_err(|_err| MarkovError::Boundary("token count exceeded u32::MAX".into()))?;
+            .map_err(|_| MarkovError::TokenLimitExceeded)?;
         let id = TokenId::new(id_val);
         self.token_to_id.insert(token.to_owned(), id);
         self.id_to_token.push(token.to_owned());
@@ -356,7 +369,7 @@ mod tests {
 
         ensure(sentence.is_some(), "should generate a sentence")?;
         ensure_eq(
-            &sentence.ok_or_else(|| MarkovError::Boundary("sentence should be some".into()))?,
+            &sentence.ok_or(MarkovError::Boundary("sentence should be some".into()))?,
             &"applebananacherry".to_owned(),
             "should reproduce exactly at very low temperature",
         )?;

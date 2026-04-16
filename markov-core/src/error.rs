@@ -2,7 +2,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq)]
 pub enum MarkovError {
-    #[error("Ngram order must be >= 1 and <= u32::MAX, but got {0}")]
+    #[error("Ngram order must be >= 1, but got {0}")]
     InvalidNgramOrder(usize),
 
     #[error("Max words must be >= 1, but got {0}")]
@@ -16,6 +16,21 @@ pub enum MarkovError {
 
     #[error("Internal boundary error: {0}")]
     Boundary(String),
+
+    #[error("Token count exceeded u32::MAX")]
+    TokenLimitExceeded,
+
+    #[error("Training window is unexpectedly empty")]
+    EmptyTrainingWindow,
+
+    #[error("Failed to get start prefix range")]
+    StartPrefixRangeError,
+
+    #[error("Training prefix range is invalid")]
+    InvalidTrainingPrefixRange,
+
+    #[error("Training model index is out of bounds")]
+    ModelIndexOutOfBounds,
 }
 
 impl From<&str> for MarkovError {

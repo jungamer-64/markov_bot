@@ -1,10 +1,34 @@
-use std::{env, error::Error, path::PathBuf};
+use std::{env, path::PathBuf};
 
-use anyhow::{Error as AnyhowError, anyhow};
 use markov_core::{MaxWords, MinWordsBeforeEos, NgramOrder, Temperature};
 use markov_storage::StorageCompressionMode;
+use thiserror::Error;
 
-pub(crate) type DynError = AnyhowError;
+pub(crate) type DynError = anyhow::Error;
+
+#[derive(Debug, Error)]
+pub(crate) enum ConfigError {
+    #[error("Environment variable {0} is missing")]
+    MissingEnvVar(String),
+
+    #[error("Environment variable {0} is empty")]
+    EmptyEnvVar(String),
+
+    #[error("Failed to parse environment variable {0}: {1}")]
+    ParseError(String, String),
+
+    #[error("REPLY_MIN_WORDS_BEFORE_EOS ({min}) must be <= REPLY_MAX_WORDS ({max})")]
+    InvalidEosThreshold { min: usize, max: usize },
+
+    #[error("STORAGE_MIN_EDGE_COUNT must be >= 1")]
+    InvalidMinEdgeCount,
+
+    #[error("Markov core error: {0}")]
+    Core(#[from] markov_core::MarkovError),
+
+    #[error("Storage error: {0}")]
+    Storage(#[from] markov_storage::StorageError),
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct BotConfig {
@@ -56,12 +80,12 @@ impl BotConfig {
         self.reply_cooldown_secs
     }
 
-    pub(crate) fn from_env() -> Result<Self, DynError> {
+    pub(crate) fn from_env() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
         Self::from_env_with(|key| env::var(key))
     }
 
-    fn from_env_with<F>(mut get_var: F) -> Result<Self, DynError>
+    fn from_env_with<F>(mut get_var: F) -> Result<Self, ConfigError>
     where
         F: FnMut(&str) -> Result<String, env::VarError>,
     {
@@ -70,49 +94,51 @@ impl BotConfig {
         let data_path = get_var("MARKOV_DATA_PATH")
             .map_or_else(|_| PathBuf::from("data/markov_chain.mkv3"), PathBuf::from);
 
-        let ngram_order = NgramOrder::new(env_parse_or_default_with(
+        let ngram_order_val = env_parse_or_default_with(
             &mut get_var,
             "MARKOV_NGRAM_ORDER",
-            NgramOrder::DEFAULT.as_usize().map_err(|e| AnyhowError::msg(e.to_string()))?,
-        )?)
-        .map_err(|error| AnyhowError::msg(error.to_string()))?;
+            NgramOrder::DEFAULT.get() as usize,
+        )?;
+        let ngram_order = NgramOrder::new(ngram_order_val)?;
 
         let storage_min_edge_count =
             env_parse_or_default_with(&mut get_var, "STORAGE_MIN_EDGE_COUNT", 1_u64)?;
         if storage_min_edge_count == 0 {
-            return Err(anyhow!("STORAGE_MIN_EDGE_COUNT must be >= 1"));
+            return Err(ConfigError::InvalidMinEdgeCount);
         }
 
         let storage_compression = match get_var("STORAGE_COMPRESSION") {
             Ok(raw) => StorageCompressionMode::parse(raw.as_str())?,
             Err(env::VarError::NotPresent) => StorageCompressionMode::Auto,
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(ConfigError::ParseError("STORAGE_COMPRESSION".to_owned(), error.to_string())),
         };
 
-        let max_words = MaxWords::new(env_parse_or_default_with(
+        let max_words_val = env_parse_or_default_with(
             &mut get_var,
             "REPLY_MAX_WORDS",
             MaxWords::DEFAULT.get(),
-        )?)
-        .map_err(|error| AnyhowError::msg(error.to_string()))?;
+        )?;
+        let max_words = MaxWords::new(max_words_val)?;
 
-        let temperature = Temperature::new(env_parse_or_default_with(
+        let temperature_val = env_parse_or_default_with(
             &mut get_var,
             "REPLY_TEMPERATURE",
             Temperature::DEFAULT.get(),
-        )?)
-        .map_err(|error| AnyhowError::msg(error.to_string()))?;
+        )?;
+        let temperature = Temperature::new(temperature_val)?;
 
-        let min_words_before_eos = MinWordsBeforeEos::new(env_parse_or_default_with(
+        let min_words_before_eos_val = env_parse_or_default_with(
             &mut get_var,
             "REPLY_MIN_WORDS_BEFORE_EOS",
             MinWordsBeforeEos::DEFAULT.get(),
-        )?);
+        )?;
+        let min_words_before_eos = MinWordsBeforeEos::new(min_words_before_eos_val);
 
         if min_words_before_eos.get() > max_words.get() {
-            return Err(anyhow!(
-                "REPLY_MIN_WORDS_BEFORE_EOS must be <= REPLY_MAX_WORDS"
-            ));
+            return Err(ConfigError::InvalidEosThreshold {
+                min: min_words_before_eos.get(),
+                max: max_words.get(),
+            });
         }
 
         let reply_cooldown_secs =
@@ -132,28 +158,32 @@ impl BotConfig {
     }
 }
 
-fn required_env_with<F>(get_var: &mut F, key: &str) -> Result<String, DynError>
+fn required_env_with<F>(get_var: &mut F, key: &str) -> Result<String, ConfigError>
 where
     F: FnMut(&str) -> Result<String, env::VarError>,
 {
-    let value = get_var(key)?;
-    if value.trim().is_empty() {
-        return Err(anyhow!("{key} is empty"));
+    match get_var(key) {
+        Ok(value) => {
+            if value.trim().is_empty() {
+                return Err(ConfigError::EmptyEnvVar(key.to_owned()));
+            }
+            Ok(value)
+        }
+        Err(env::VarError::NotPresent) => Err(ConfigError::MissingEnvVar(key.to_owned())),
+        Err(error) => Err(ConfigError::ParseError(key.to_owned(), error.to_string())),
     }
-
-    Ok(value)
 }
 
-fn env_parse_or_default_with<T, F>(get_var: &mut F, key: &str, default: T) -> Result<T, DynError>
+fn env_parse_or_default_with<T, F>(get_var: &mut F, key: &str, default: T) -> Result<T, ConfigError>
 where
     F: FnMut(&str) -> Result<String, env::VarError>,
     T: std::str::FromStr,
-    T::Err: Error + Send + Sync + 'static,
+    T::Err: std::fmt::Display,
 {
     match get_var(key) {
-        Ok(raw) => Ok(raw.parse::<T>()?),
+        Ok(raw) => raw.parse::<T>().map_err(|e| ConfigError::ParseError(key.to_owned(), e.to_string())),
         Err(env::VarError::NotPresent) => Ok(default),
-        Err(error) => Err(error.into()),
+        Err(error) => Err(ConfigError::ParseError(key.to_owned(), error.to_string())),
     }
 }
 
@@ -163,15 +193,7 @@ mod tests {
 
     use super::BotConfig;
 
-    fn ensure(condition: bool, message: &str) -> Result<(), super::DynError> {
-        if condition {
-            Ok(())
-        } else {
-            Err(anyhow::Error::msg(message.to_owned()))
-        }
-    }
-
-    fn config_from_pairs(pairs: &[(&str, &str)]) -> Result<BotConfig, super::DynError> {
+    fn config_from_pairs(pairs: &[(&str, &str)]) -> Result<BotConfig, super::ConfigError> {
         let env = pairs
             .iter()
             .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
@@ -180,36 +202,33 @@ mod tests {
     }
 
     #[test]
-    fn defaults_ngram_order_to_six() -> Result<(), super::DynError> {
+    fn defaults_ngram_order_to_six() -> Result<(), super::ConfigError> {
         let config = config_from_pairs(&[("DISCORD_TOKEN", "token")])?;
-        ensure(config.ngram_order().as_usize().map_err(|e| anyhow::Error::msg(e.to_string()))? == 6, "default ngram order should be 6")?;
+        assert_eq!(config.ngram_order().as_usize().map_err(|e| super::ConfigError::Core(e))?, 6);
         Ok(())
     }
 
     #[test]
-    fn accepts_ngram_order_bounds() -> Result<(), super::DynError> {
+    fn accepts_ngram_order_bounds() -> Result<(), super::ConfigError> {
         let lower = config_from_pairs(&[("DISCORD_TOKEN", "token"), ("MARKOV_NGRAM_ORDER", "1")])?;
         let upper = config_from_pairs(&[("DISCORD_TOKEN", "token"), ("MARKOV_NGRAM_ORDER", "6")])?;
         let seven = config_from_pairs(&[("DISCORD_TOKEN", "token"), ("MARKOV_NGRAM_ORDER", "7")])?;
         let sixteen =
             config_from_pairs(&[("DISCORD_TOKEN", "token"), ("MARKOV_NGRAM_ORDER", "16")])?;
 
-        ensure(lower.ngram_order().as_usize().map_err(|e| anyhow::Error::msg(e.to_string()))? == 1, "ngram order 1 should be accepted")?;
-        ensure(upper.ngram_order().as_usize().map_err(|e| anyhow::Error::msg(e.to_string()))? == 6, "ngram order 6 should be accepted")?;
-        ensure(seven.ngram_order().as_usize().map_err(|e| anyhow::Error::msg(e.to_string()))? == 7, "ngram order 7 should be accepted")?;
-        ensure(
-            sixteen.ngram_order().as_usize().map_err(|e| anyhow::Error::msg(e.to_string()))? == 16,
-            "ngram order 16 should be accepted",
-        )?;
+        assert_eq!(lower.ngram_order().as_usize().map_err(|e| super::ConfigError::Core(e))?, 1);
+        assert_eq!(upper.ngram_order().as_usize().map_err(|e| super::ConfigError::Core(e))?, 6);
+        assert_eq!(seven.ngram_order().as_usize().map_err(|e| super::ConfigError::Core(e))?, 7);
+        assert_eq!(sixteen.ngram_order().as_usize().map_err(|e| super::ConfigError::Core(e))?, 16);
         Ok(())
     }
 
     #[test]
-    fn rejects_zero_ngram_order() -> Result<(), super::DynError> {
-        ensure(
+    fn rejects_zero_ngram_order() -> Result<(), super::ConfigError> {
+        assert!(
             config_from_pairs(&[("DISCORD_TOKEN", "token"), ("MARKOV_NGRAM_ORDER", "0")]).is_err(),
-            "ngram order 0 should be rejected",
-        )?;
+            "ngram order 0 should be rejected"
+        );
         Ok(())
     }
 }

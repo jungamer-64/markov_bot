@@ -21,7 +21,12 @@ pub(crate) fn choose_weighted_prefix<R: Rng + ?Sized>(
 ) -> Option<Prefix> {
     let mut entries = starts
         .iter()
-        .filter_map(|(prefix, count)| (count.get() > 0).then_some((prefix.clone(), *count)))
+        .filter_map(|(prefix, count)| {
+            if count.get() == 0 {
+                return None;
+            }
+            Some((prefix.clone(), *count))
+        })
         .collect::<Vec<_>>();
 
     entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
@@ -110,12 +115,14 @@ fn scaled_temperature_weight(count: Count, exponent: f64) -> Option<f64> {
 }
 
 fn default_sampling_weight(count: Count) -> Option<f64> {
-    if count.get() == 0 {
+    let val = count.get();
+    if val == 0 {
         return None;
     }
 
-    let bounded = u32::try_from(count.get()).unwrap_or(u32::MAX);
-    Some(f64::from(bounded))
+    // u64 to f64 conversion is generally safe for these counts.
+    // If it exceeds what f64 can represent exactly, it will be an approximation.
+    Some(val as f64)
 }
 
 impl<K> AliasTable<K> {

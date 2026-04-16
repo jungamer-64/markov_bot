@@ -100,7 +100,7 @@ impl DiscordHandler {
             reply_tx,
         }).await.map_err(|_error| anyhow::anyhow!("handler actor is dead"))?;
 
-        let reply_text = reply_rx.await.map_err(|_error| anyhow::anyhow!("reply channel closed"))??;
+        let reply_text: Option<String> = reply_rx.await.map_err(|_error| anyhow::anyhow!("reply channel closed"))??;
 
         if let Some(text) = reply_text {
             let _ = http.create_message(channel_id).content(&text).await?;

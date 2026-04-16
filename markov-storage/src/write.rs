@@ -258,7 +258,7 @@ fn write_descriptors(
     vocab_blob_len: usize,
 ) -> Result<Vec<SectionDescriptor>, DynError> {
     let section_count = u64_from_usize(sections.models.len() + 3, "section count")?;
-    let mut descriptors = Vec::with_capacity(usize::try_from(section_count).unwrap_or(0));
+    let mut descriptors = Vec::with_capacity(usize_try_from_u64(section_count, "section count")?);
     let mut current_offset = super::aligned_metadata_end(section_count)?;
 
     let mut add_descriptor = |kind: SectionKind, flags: u32, size: u64| {
@@ -519,4 +519,8 @@ fn write_u32(target: &mut Vec<u8>, value: u32) {
 
 fn write_u64(target: &mut Vec<u8>, value: u64) {
     target.extend_from_slice(value.to_le_bytes().as_slice());
+}
+
+fn usize_try_from_u64(value: u64, context: &str) -> Result<usize, DynError> {
+    usize::try_from(value).map_err(|_error| format!("{context} exceeds usize range").into())
 }
