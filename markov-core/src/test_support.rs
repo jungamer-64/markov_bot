@@ -4,7 +4,7 @@ pub(crate) fn ensure(condition: bool, message: &str) -> Result<(), MarkovError> 
     if condition {
         Ok(())
     } else {
-        Err(message.into())
+        Err(MarkovError::Boundary(message.to_owned()))
     }
 }
 

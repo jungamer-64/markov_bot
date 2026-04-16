@@ -7,6 +7,7 @@ use super::test_support::{
     rewrite_checksum, sample_chain_with_order, section_body_offset, write_sample_file,
     write_u32_at, write_u64_at,
 };
+use crate::StorageError;
 
 #[test]
 fn rejects_saved_ngram_order_mismatch() -> Result<(), crate::StorageError> {
@@ -54,7 +55,7 @@ fn rejects_invalid_model_edge_range() -> Result<(), crate::StorageError> {
     let section_offset = section_body_offset(bytes.as_slice(), descriptor_index)?;
     let edge_len_offset = section_offset
         .checked_add(4 + 4 + 7 * 4 + 4)
-        .ok_or_else(|| crate::StorageError::from("edge length offset overflow"))?;
+        .ok_or_else(|| StorageError::Format("edge length offset overflow".to_owned()))?;
     write_u32_at(bytes.as_mut_slice(), edge_len_offset, u32::MAX)?;
     rewrite_checksum(bytes.as_mut_slice())?;
     fs::write(&path, bytes)?;

@@ -19,8 +19,8 @@ fn round_trips_multiple_ngram_orders() -> Result<(), crate::StorageError> {
             "model section count should match ngram order",
         )?;
         ensure_eq(
-            loaded.id_to_token(),
-            chain.id_to_token(),
+            loaded.registry().tokens(),
+            chain.registry().tokens(),
             "vocabulary should round-trip",
         )?;
         ensure_eq(

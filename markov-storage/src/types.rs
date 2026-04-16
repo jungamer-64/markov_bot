@@ -4,6 +4,7 @@ use crate::{
     config::DynError,
     descriptor_count_for_ngram_order,
     markov::{Count, NgramOrder, Prefix, TokenId},
+    StorageError,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -22,7 +23,7 @@ pub(super) struct Header {
 impl Header {
     pub(super) fn expected_section_count(&self) -> Result<u64, DynError> {
         let order = usize::try_from(self.ngram_order)
-            .map_err(|_err| "ngram_order exceeds usize range")?;
+            .map_err(|_| StorageError::Format("ngram_order exceeds usize range".to_owned()))?;
         descriptor_count_for_ngram_order(order)
     }
 }
@@ -100,9 +101,9 @@ impl SectionTable {
 
         let entry = matches
             .next()
-            .ok_or_else(|| format!("section table is missing {}", kind.label()))?;
+            .ok_or_else(|| StorageError::Format(format!("section table is missing {}", kind.label())))?;
         if matches.next().is_some() {
-            return Err(format!("section table has duplicate {}", kind.label()).into());
+            return Err(StorageError::Format(format!("section table has duplicate {}", kind.label())));
         }
 
         Ok(entry)

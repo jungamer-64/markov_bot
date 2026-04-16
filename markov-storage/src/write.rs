@@ -4,6 +4,7 @@ use super::{
     DynError, MODEL_SECTION_HEADER_SIZE, START_SECTION_HEADER_SIZE, StorageCompressionMode,
     align_to_eight, bytes_for_len, checked_add, compute_checksum, model_record_size,
     start_record_size, u32_from_usize, u64_from_usize, validate_special_tokens,
+    StorageError,
 };
 use crate::markov::{Count, MarkovChain, Prefix, TokenId};
 
@@ -21,9 +22,9 @@ pub(super) fn compile_chain(
     chain: &MarkovChain,
     min_edge_count: Count,
 ) -> Result<StorageSections, DynError> {
-    validate_special_tokens(chain.id_to_token())?;
+    validate_special_tokens(chain.registry().tokens())?;
     if min_edge_count.get() == 0 {
-        return Err("min_edge_count must be >= 1".into());
+        return Err(StorageError::Format("min_edge_count must be >= 1".to_owned()));
     }
 
     let starts = compile_starts(chain)?;
@@ -32,15 +33,15 @@ pub(super) fn compile_chain(
         let model = chain
             .models()
             .get(order_val - 1)
-            .ok_or_else(|| format!("chain model section for order {order_val} is missing"))?;
+            .ok_or_else(|| StorageError::Format(format!("chain model section for order {order_val} is missing")))?;
         models.push(compile_model(model, order_val, min_edge_count)?);
     }
 
     Ok(StorageSections {
         ngram_order: chain.order(),
         vocab: VocabSections {
-            offsets: build_vocab_offsets(chain.id_to_token())?,
-            blob: chain.id_to_token().join("").into_bytes(),
+            offsets: build_vocab_offsets(chain.registry().tokens())?,
+            blob: chain.registry().tokens().join("").into_bytes(),
         },
         starts,
         models,
@@ -149,16 +150,15 @@ fn compile_model(
 
     for prefix in prefixes {
         if prefix.len() != order {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "model{order} prefix length mismatch: expected {order}, got {}",
                 prefix.len()
-            )
-            .into());
+            )));
         }
 
         let candidates = model_data
             .get(prefix)
-            .ok_or_else(|| format!("model{order} is missing prefix {prefix:?}"))?;
+            .ok_or_else(|| StorageError::Format(format!("model{order} is missing prefix {prefix:?}")))?;
         let mut targets = candidates.keys().collect::<Vec<_>>();
         targets.sort_unstable();
 
@@ -168,14 +168,14 @@ fn compile_model(
         for next in targets {
             let count = candidates
                 .get(next)
-                .ok_or_else(|| format!("model{order} is missing next token {next:?}"))?;
+                .ok_or_else(|| StorageError::Format(format!("model{order} is missing next token {next:?}")))?;
             if count.get() < min_edge_count.get() {
                 continue;
             }
 
             cumulative = cumulative
                 .checked_add(count.get())
-                .ok_or("model edge cumulative count overflow")?;
+                .ok_or_else(|| StorageError::Format("model edge cumulative count overflow".to_owned()))?;
             edges.push(EdgeRecord { next: *next, cumulative: Count::new(cumulative) });
         }
 
@@ -205,25 +205,24 @@ fn compile_starts(chain: &MarkovChain) -> Result<Vec<StartRecord>, DynError> {
     let mut cumulative = 0_u64;
     for prefix in prefixes {
         if prefix.len() != chain.order().as_usize()? {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "start record prefix length mismatch: expected {}, got {}",
                 chain.order().as_usize()?,
                 prefix.len()
-            )
-            .into());
+            )));
         }
 
         let count = chain
             .starts()
             .get(prefix)
-            .ok_or_else(|| format!("chain starts is missing prefix {prefix:?}"))?;
+            .ok_or_else(|| StorageError::Format(format!("chain starts is missing prefix {prefix:?}")))?;
         if count.get() == 0 {
             continue;
         }
 
         cumulative = cumulative
             .checked_add(count.get())
-            .ok_or("start record cumulative count overflow")?;
+            .ok_or_else(|| StorageError::Format("start record cumulative count overflow".to_owned()))?;
         records.push(StartRecord {
             prefix: prefix.clone(),
             cumulative: Count::new(cumulative),
@@ -314,18 +313,18 @@ fn write_sections(
     write_u64_section(
         target,
         sections.vocab.offsets.as_slice(),
-        descriptors.first().ok_or("missing vocab offsets descriptor")?,
+        descriptors.first().ok_or_else(|| StorageError::Format("missing vocab offsets descriptor".to_owned()))?,
     )?;
     write_blob_section(
         target,
         vocab_blob,
-        descriptors.get(1).ok_or("missing vocab blob descriptor")?,
+        descriptors.get(1).ok_or_else(|| StorageError::Format("missing vocab blob descriptor".to_owned()))?,
     )?;
     write_starts_section(
         target,
         sections.starts.as_slice(),
         sections.ngram_order.as_usize()?,
-        descriptors.get(2).ok_or("missing starts descriptor")?,
+        descriptors.get(2).ok_or_else(|| StorageError::Format("missing starts descriptor".to_owned()))?,
     )?;
 
     for (index, model) in sections.models.iter().enumerate() {
@@ -334,7 +333,7 @@ fn write_sections(
             model,
             descriptors
                 .get(index + 3)
-                .ok_or("missing model descriptor")?,
+                .ok_or_else(|| StorageError::Format("missing model descriptor".to_owned()))?,
         )?;
     }
 
@@ -374,11 +373,10 @@ fn write_starts_section(
     write_u32(target, u32_from_usize(records.len(), "start records")?);
     for record in records {
         if record.prefix.len() != ngram_order {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "start record prefix length mismatch: expected {ngram_order}, got {}",
                 record.prefix.len()
-            )
-            .into());
+            )));
         }
 
         for token_id in record.prefix.as_slice() {
@@ -402,13 +400,12 @@ fn write_model_section(
 
     for record in &section.records {
         if record.prefix.len() != section.order {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "model{} record prefix length mismatch: expected {}, got {}",
                 section.order,
                 section.order,
                 record.prefix.len()
-            )
-            .into());
+            )));
         }
 
         for token_id in record.prefix.as_slice() {
@@ -428,9 +425,9 @@ fn write_model_section(
 }
 
 fn pad_to_offset(target: &mut Vec<u8>, offset: u64) -> Result<(), DynError> {
-    let offset = usize::try_from(offset).map_err(|_error| "offset exceeds usize range")?;
+    let offset = usize::try_from(offset).map_err(|_error| StorageError::Format("offset exceeds usize range".to_owned()))?;
     if target.len() > offset {
-        return Err("target already exceeds requested offset".into());
+        return Err(StorageError::Format("target already exceeds requested offset".to_owned()));
     }
     target.resize(offset, 0);
     Ok(())
@@ -467,26 +464,26 @@ fn encode_vocab_blob_rle(blob: &[u8]) -> Result<Vec<u8>, DynError> {
     let mut cursor = 0_usize;
 
     while cursor < blob.len() {
-        let repeat_len = count_repeats(blob.get(cursor..).ok_or("RLE: blob range is invalid")?);
+        let repeat_len = count_repeats(blob.get(cursor..).ok_or_else(|| StorageError::Format("RLE: blob range is invalid".to_owned()))?);
         if repeat_len >= REPEAT_CHUNK_MIN {
             let chunk_len = repeat_len.min(REPEAT_CHUNK_MAX);
             let control = REPEAT_CONTROL_THRESHOLD
-                .checked_add(u8::try_from(chunk_len - REPEAT_CHUNK_MIN).map_err(|_error| "RLE: chunk_len overflow")?)
-                .ok_or("RLE: control byte overflow")?;
+                .checked_add(u8::try_from(chunk_len - REPEAT_CHUNK_MIN).map_err(|_error| StorageError::Format("RLE: chunk_len overflow".to_owned()))?)
+                .ok_or_else(|| StorageError::Format("RLE: control byte overflow".to_owned()))?;
             encoded.push(control);
             encoded.push(
                 *blob
                     .get(cursor)
-                    .ok_or("RLE: repeat byte range is invalid")?,
+                    .ok_or_else(|| StorageError::Format("RLE: repeat byte range is invalid".to_owned()))?,
             );
             cursor += chunk_len;
         } else {
-            let literal_len = count_literals(blob.get(cursor..).ok_or("RLE: literal blob range is invalid")?);
+            let literal_len = count_literals(blob.get(cursor..).ok_or_else(|| StorageError::Format("RLE: literal blob range is invalid".to_owned()))?);
             let chunk_len = literal_len.min(usize::from(REPEAT_CONTROL_THRESHOLD));
-            encoded.push(u8::try_from(chunk_len - 1).map_err(|_error| "RLE: literal chunk_len underflow")?);
+            encoded.push(u8::try_from(chunk_len - 1).map_err(|_error| StorageError::Format("RLE: literal chunk_len underflow".to_owned()))?);
             encoded.extend_from_slice(
                 blob.get(cursor..cursor + chunk_len)
-                    .ok_or("RLE: literal chunk range is invalid")?,
+                    .ok_or_else(|| StorageError::Format("RLE: literal chunk range is invalid".to_owned()))?,
             );
             cursor += chunk_len;
         }
@@ -522,5 +519,5 @@ fn write_u64(target: &mut Vec<u8>, value: u64) {
 }
 
 fn usize_try_from_u64(value: u64, context: &str) -> Result<usize, DynError> {
-    usize::try_from(value).map_err(|_error| format!("{context} exceeds usize range").into())
+    usize::try_from(value).map_err(|_error| StorageError::Format(format!("{context} exceeds usize range")))
 }

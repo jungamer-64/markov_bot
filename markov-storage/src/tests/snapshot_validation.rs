@@ -1,6 +1,6 @@
 use crate::{
     SnapshotEdge, SnapshotEntry, SnapshotModel, SnapshotModelEntry, SnapshotSource,
-    StorageCompressionMode, StorageSnapshot, encode_snapshot,
+    StorageCompressionMode, StorageSnapshot, encode_snapshot, StorageError,
 };
 
 use super::test_support::ensure;
@@ -40,7 +40,7 @@ fn valid_snapshot() -> StorageSnapshot {
 #[test]
 fn rejects_missing_special_tokens() -> Result<(), crate::StorageError> {
     let mut snapshot = valid_snapshot();
-    *snapshot.tokens.get_mut(0).ok_or("tokens[0] missing")? = "wrong".to_owned();
+    *snapshot.tokens.get_mut(0).ok_or_else(|| StorageError::Format("tokens[0] missing".to_owned()))? = "wrong".to_owned();
     ensure(
         encode_snapshot(snapshot.clone(), StorageCompressionMode::Uncompressed).is_err(),
         "snapshot without BOS should be rejected",
@@ -50,7 +50,7 @@ fn rejects_missing_special_tokens() -> Result<(), crate::StorageError> {
 #[test]
 fn rejects_prefix_length_mismatch() -> Result<(), crate::StorageError> {
     let mut snapshot = valid_snapshot();
-    snapshot.starts.get_mut(0).ok_or("starts[0] missing")?.prefix = vec![2];
+    snapshot.starts.get_mut(0).ok_or_else(|| StorageError::Format("starts[0] missing".to_owned()))?.prefix = vec![2];
     ensure(
         encode_snapshot(snapshot.clone(), StorageCompressionMode::Uncompressed).is_err(),
         "snapshot start prefix length mismatch should be rejected",
@@ -60,9 +60,9 @@ fn rejects_prefix_length_mismatch() -> Result<(), crate::StorageError> {
 #[test]
 fn rejects_out_of_range_token_id() -> Result<(), crate::StorageError> {
     let mut snapshot = valid_snapshot();
-    snapshot.models.get_mut(0).ok_or("models[0] missing")?
-        .entries.get_mut(0).ok_or("models[0].entries[0] missing")?
-        .edges.get_mut(0).ok_or("models[0].entries[0].edges[0] missing")?.next = 99;
+    snapshot.models.get_mut(0).ok_or_else(|| StorageError::Format("models[0] missing".to_owned()))?
+        .entries.get_mut(0).ok_or_else(|| StorageError::Format("models[0].entries[0] missing".to_owned()))?
+        .edges.get_mut(0).ok_or_else(|| StorageError::Format("models[0].entries[0].edges[0] missing".to_owned()))?.next = 99;
     ensure(
         encode_snapshot(snapshot.clone(), StorageCompressionMode::Uncompressed).is_err(),
         "snapshot edge token id out of range should be rejected",
@@ -72,9 +72,9 @@ fn rejects_out_of_range_token_id() -> Result<(), crate::StorageError> {
 #[test]
 fn rejects_zero_count() -> Result<(), crate::StorageError> {
     let mut snapshot = valid_snapshot();
-    snapshot.models.get_mut(0).ok_or("models[0] missing")?
-        .entries.get_mut(0).ok_or("models[0].entries[0] missing")?
-        .edges.get_mut(0).ok_or("models[0].entries[0].edges[0] missing")?.count = 0;
+    snapshot.models.get_mut(0).ok_or_else(|| StorageError::Format("models[0] missing".to_owned()))?
+        .entries.get_mut(0).ok_or_else(|| StorageError::Format("models[0].entries[0] missing".to_owned()))?
+        .edges.get_mut(0).ok_or_else(|| StorageError::Format("models[0].entries[0].edges[0] missing".to_owned()))?.count = 0;
     ensure(
         encode_snapshot(snapshot.clone(), StorageCompressionMode::Uncompressed).is_err(),
         "snapshot zero count should be rejected",
@@ -84,8 +84,8 @@ fn rejects_zero_count() -> Result<(), crate::StorageError> {
 #[test]
 fn rejects_duplicate_edge_target() -> Result<(), crate::StorageError> {
     let mut snapshot = valid_snapshot();
-    snapshot.models.get_mut(0).ok_or("models[0] missing")?
-        .entries.get_mut(0).ok_or("models[0].entries[0] missing")?
+    snapshot.models.get_mut(0).ok_or_else(|| StorageError::Format("models[0] missing".to_owned()))?
+        .entries.get_mut(0).ok_or_else(|| StorageError::Format("models[0].entries[0] missing".to_owned()))?
         .edges
         .push(SnapshotEdge { next: 1, count: 2 });
     ensure(

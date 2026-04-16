@@ -3,12 +3,13 @@ use std::collections::HashMap;
 use rand::Rng;
 
 use crate::{
-    BOS_ID, BOS_TOKEN, Count, EOS_ID, EOS_TOKEN, MarkovError, NgramOrder, Prefix, TokenId,
+    BOS_ID, Count, EOS_ID, MarkovError, NgramOrder, Prefix, TokenId,
+    token::TokenRegistry,
     options::{EosPolicy, GenerationOptions, Temperature},
     sampling,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Models(Vec<HashMap<Prefix, HashMap<TokenId, Count>>>);
 
 impl Models {
@@ -29,11 +30,10 @@ impl Models {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MarkovChain {
     order: NgramOrder,
-    token_to_id: HashMap<String, TokenId>,
-    id_to_token: Vec<String>,
+    registry: TokenRegistry,
     models: Models,
     starts: HashMap<Prefix, Count>,
 }
@@ -42,29 +42,9 @@ impl MarkovChain {
     /// # Errors
     /// Returns `MarkovError::InvalidNgramOrder` if `order` is 0.
     pub fn new(order: NgramOrder) -> Result<Self, MarkovError> {
-        let mut token_to_id = HashMap::new();
-        token_to_id.insert(BOS_TOKEN.to_owned(), BOS_ID);
-        token_to_id.insert(EOS_TOKEN.to_owned(), EOS_ID);
-
-        let mut id_to_token = vec![String::new(); 2];
-        let bos_idx = usize::try_from(BOS_ID.get())
-            .map_err(|err| MarkovError::Boundary(format!("BOS_ID conversion failed: {err}")))?;
-        let bos_slot = id_to_token
-            .get_mut(bos_idx)
-            .ok_or_else(|| MarkovError::Boundary("BOS_ID is out of bounds".into()))?;
-        BOS_TOKEN.clone_into(bos_slot);
-
-        let eos_idx = usize::try_from(EOS_ID.get())
-            .map_err(|err| MarkovError::Boundary(format!("EOS_ID conversion failed: {err}")))?;
-        let eos_slot = id_to_token
-            .get_mut(eos_idx)
-            .ok_or_else(|| MarkovError::Boundary("EOS_ID is out of bounds".into()))?;
-        EOS_TOKEN.clone_into(eos_slot);
-
         Ok(Self {
             order,
-            token_to_id,
-            id_to_token,
+            registry: TokenRegistry::new(),
             models: Models::new(order)?,
             starts: HashMap::new(),
         })
@@ -76,18 +56,13 @@ impl MarkovChain {
     }
 
     #[must_use]
-    pub fn id_to_token(&self) -> &[String] {
-        &self.id_to_token
+    pub const fn registry(&self) -> &TokenRegistry {
+        &self.registry
     }
 
     #[must_use]
     pub const fn starts(&self) -> &HashMap<Prefix, Count> {
         &self.starts
-    }
-
-    #[must_use]
-    pub const fn token_to_id(&self) -> &HashMap<String, TokenId> {
-        &self.token_to_id
     }
 
     #[must_use]
@@ -99,8 +74,7 @@ impl MarkovChain {
     /// Returns `MarkovError::Boundary` if the parts are inconsistent.
     pub fn from_parts(
         order: NgramOrder,
-        token_to_id: HashMap<String, TokenId>,
-        id_to_token: Vec<String>,
+        registry: TokenRegistry,
         models: Vec<HashMap<Prefix, HashMap<TokenId, Count>>>,
         starts: HashMap<Prefix, Count>,
     ) -> Result<Self, MarkovError> {
@@ -114,8 +88,7 @@ impl MarkovChain {
 
         Ok(Self {
             order,
-            token_to_id,
-            id_to_token,
+            registry,
             models: Models(models),
             starts,
         })
@@ -132,7 +105,7 @@ impl MarkovChain {
         let mut ids = Vec::with_capacity(tokens.len() + order_usize + 1);
         ids.extend(std::iter::repeat_n(BOS_ID, order_usize));
         for token in tokens {
-            ids.push(self.get_or_insert_token(token)?);
+            ids.push(self.registry.get_or_insert(token)?);
         }
         ids.push(EOS_ID);
 
@@ -226,9 +199,8 @@ impl MarkovChain {
     }
 
     fn push_generated_token(&self, generated: &mut Vec<String>, id: TokenId) -> Option<()> {
-        let idx = usize::try_from(id.get()).ok()?;
-        let token = self.id_to_token.get(idx)?;
-        generated.push(token.clone());
+        let token = self.registry.get_token(id)?;
+        generated.push(token.to_owned());
         Some(())
     }
 
@@ -304,19 +276,6 @@ impl MarkovChain {
 
         sampling::choose_weighted_token(&totals, rng, temperature, EosPolicy::Forbidden)
     }
-
-    fn get_or_insert_token(&mut self, token: &str) -> Result<TokenId, MarkovError> {
-        if let Some(id) = self.token_to_id.get(token) {
-            return Ok(*id);
-        }
-
-        let id_val = u32::try_from(self.id_to_token.len())
-            .map_err(|_err| MarkovError::TokenLimitExceeded)?;
-        let id = TokenId::new(id_val);
-        self.token_to_id.insert(token.to_owned(), id);
-        self.id_to_token.push(token.to_owned());
-        Ok(id)
-    }
 }
 
 fn increment_nested_count(
@@ -349,7 +308,7 @@ mod tests {
     fn training_increases_token_count() -> Result<(), MarkovError> {
         let mut chain = MarkovChain::new(NgramOrder::new(3)?)?;
         chain.train_tokens(&["a".to_owned(), "b".to_owned(), "c".to_owned()])?;
-        ensure(chain.id_to_token().len() > 2, "token count should increase")?;
+        ensure(chain.registry().len() > 2, "token count should increase")?;
         Ok(())
     }
 

@@ -63,18 +63,6 @@ pub enum StorageError {
     NgramOrderMismatch { expected: NgramOrder, actual: NgramOrder },
 }
 
-impl From<&str> for StorageError {
-    fn from(value: &str) -> Self {
-        Self::Format(value.to_owned())
-    }
-}
-
-impl From<String> for StorageError {
-    fn from(value: String) -> Self {
-        Self::Format(value)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageCompressionMode {
@@ -95,10 +83,9 @@ impl StorageCompressionMode {
             "none" | "off" | "uncompressed" => Ok(Self::Uncompressed),
             "rle" | "vocab_rle" | "vocab-blob-rle" => Ok(Self::Rle),
             "zstd" => Ok(Self::Zstd),
-            _ => Err(format!(
+            _ => Err(StorageError::Format(format!(
                 "unsupported STORAGE_COMPRESSION value: {raw} (expected: auto|none|rle|zstd)"
-            )
-            .into()),
+            ))),
         }
     }
 
@@ -232,7 +219,7 @@ pub fn snapshot_to_chain(snapshot: StorageSnapshot) -> Result<MarkovChain, DynEr
         }
         let slot = models
             .get_mut(model.order - 1)
-            .ok_or_else(|| format!("snapshot model order {} is out of range", model.order))?;
+            .ok_or_else(|| StorageError::Format(format!("snapshot model order {} is out of range", model.order)))?;
         *slot = prefixes;
     }
 
@@ -242,10 +229,11 @@ pub fn snapshot_to_chain(snapshot: StorageSnapshot) -> Result<MarkovChain, DynEr
         .map(|entry| (markov_core::Prefix::new(entry.prefix.into_iter().map(markov_core::TokenId::new).collect()), markov_core::Count::new(entry.count)))
         .collect::<HashMap<_, _>>();
 
+    let registry = markov_core::token::TokenRegistry::from_parts(token_to_id, snapshot.tokens)?;
+
     Ok(MarkovChain::from_parts(
         order,
-        token_to_id,
-        snapshot.tokens,
+        registry,
         models,
         starts,
     )?)
@@ -259,11 +247,11 @@ pub fn chain_to_snapshot(
     chain: &MarkovChain,
     compression_mode: StorageCompressionMode,
 ) -> Result<StorageSnapshot, DynError> {
-    validate_special_tokens(chain.id_to_token())?;
+    validate_special_tokens(chain.registry().tokens())?;
     validate_token_index(chain)?;
 
     if chain.models().len() != chain.order().as_usize()? {
-        return Err("model count does not match ngram order".into());
+        return Err(StorageError::Format("model count does not match ngram order".to_owned()));
     }
 
     let mut starts = chain
@@ -307,7 +295,7 @@ pub fn chain_to_snapshot(
             ngram_order: chain.order().as_usize()?,
             compression: compression_mode,
         },
-        tokens: chain.id_to_token().to_vec(),
+        tokens: chain.registry().tokens().to_vec(),
         starts,
         models,
     };
@@ -338,7 +326,7 @@ fn validate_snapshot(snapshot: &StorageSnapshot) -> Result<(), DynError> {
         .collect::<BTreeSet<_>>();
     if actual_orders != expected_orders {
         return Err(StorageError::Format(
-            "snapshot models must cover every order from ngram_order down to 1".into(),
+            "snapshot models must cover every order from ngram_order down to 1".to_owned(),
         ));
     }
 
@@ -352,12 +340,12 @@ fn validate_snapshot(snapshot: &StorageSnapshot) -> Result<(), DynError> {
         )?;
         if entry.count == 0 {
             return Err(StorageError::Format(
-                "snapshot start count must be greater than zero".into(),
+                "snapshot start count must be greater than zero".to_owned(),
             ));
         }
         if !seen_starts.insert(entry.prefix.clone()) {
             return Err(StorageError::Format(
-                "duplicate snapshot start prefix".into(),
+                "duplicate snapshot start prefix".to_owned(),
             ));
         }
     }
@@ -366,7 +354,7 @@ fn validate_snapshot(snapshot: &StorageSnapshot) -> Result<(), DynError> {
         || token_to_id.get(EOS_TOKEN) != Some(&markov_core::TokenId::new(1))
     {
         return Err(StorageError::Format(
-            "snapshot special token ids are invalid".into(),
+            "snapshot special token ids are invalid".to_owned(),
         ));
     }
 
@@ -396,11 +384,11 @@ fn validate_snapshot(snapshot: &StorageSnapshot) -> Result<(), DynError> {
                 validate_token_id(edge.next, token_count, "snapshot edge")?;
                 if edge.count == 0 {
                     return Err(StorageError::Format(
-                        "snapshot edge count must be greater than zero".into(),
+                        "snapshot edge count must be greater than zero".to_owned(),
                     ));
                 }
                 if !seen_edges.insert(edge.next) {
-                    return Err(StorageError::Format("duplicate snapshot edge target".into()));
+                    return Err(StorageError::Format("duplicate snapshot edge target".to_owned()));
                 }
             }
         }
@@ -416,11 +404,10 @@ fn validate_snapshot_prefix(
     context: &str,
 ) -> Result<(), DynError> {
     if prefix.len() != expected_len {
-        return Err(format!(
+        return Err(StorageError::Format(format!(
             "{context} prefix length mismatch: expected {expected_len}, got {}",
             prefix.len()
-        )
-        .into());
+        )));
     }
     for token_id in prefix {
         validate_token_id(*token_id, token_count, context)?;
@@ -435,7 +422,7 @@ fn build_token_index(tokens: &[String]) -> Result<HashMap<String, markov_core::T
         let token_id = markov_core::TokenId::new(u32_from_usize(position, "token id")?);
 
         if index.insert(token.clone(), token_id).is_some() {
-            return Err(format!("duplicate token in vocab: {token}").into());
+            return Err(StorageError::Format(format!("duplicate token in vocab: {token}")));
         }
     }
 
@@ -447,45 +434,45 @@ fn compression_mode_from_flags(flags: u32) -> Result<StorageCompressionMode, Dyn
         0 => Ok(StorageCompressionMode::Uncompressed),
         FLAG_VOCAB_BLOB_RLE => Ok(StorageCompressionMode::Rle),
         FLAG_VOCAB_BLOB_ZSTD => Ok(StorageCompressionMode::Zstd),
-        _ => Err("unsupported vocab blob compression flags".into()),
+        _ => Err(StorageError::Format("unsupported vocab blob compression flags".to_owned())),
     }
 }
 
 fn validate_special_tokens(tokens: &[String]) -> Result<(), DynError> {
     let Some(first) = tokens.first() else {
-        return Err("vocabulary is empty".into());
+        return Err(StorageError::Format("vocabulary is empty".to_owned()));
     };
     if first != BOS_TOKEN {
-        return Err("token id 0 must be <BOS>".into());
+        return Err(StorageError::Format("token id 0 must be <BOS>".to_owned()));
     }
 
     let Some(second) = tokens.get(1) else {
-        return Err("vocabulary is missing <EOS>".into());
+        return Err(StorageError::Format("vocabulary is missing <EOS>".to_owned()));
     };
     if second != EOS_TOKEN {
-        return Err("token id 1 must be <EOS>".into());
+        return Err(StorageError::Format("token id 1 must be <EOS>".to_owned()));
     }
 
     Ok(())
 }
 
 fn validate_token_index(chain: &MarkovChain) -> Result<(), DynError> {
-    if chain.token_to_id().len() != chain.id_to_token().len() {
-        return Err("token index size mismatch".into());
+    if chain.registry().token_to_id().len() != chain.registry().tokens().len() {
+        return Err(StorageError::Format("token index size mismatch".to_owned()));
     }
 
-    for (index, token) in chain.id_to_token().iter().enumerate() {
+    for (index, token) in chain.registry().tokens().iter().enumerate() {
         let expected_id = markov_core::TokenId::new(u32_from_usize(index, "token index")?);
         let actual_id = chain
+            .registry()
             .token_to_id()
             .get(token)
             .copied()
-            .ok_or_else(|| format!("token_to_id is missing '{token}'"))?;
+            .ok_or_else(|| StorageError::Format(format!("token_to_id is missing '{token}'")))?;
         if actual_id != expected_id {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "token_to_id mismatch for '{token}': expected {expected_id}, got {actual_id}"
-            )
-            .into());
+            )));
         }
     }
 
@@ -494,7 +481,7 @@ fn validate_token_index(chain: &MarkovChain) -> Result<(), DynError> {
 
 fn validate_token_id(token_id: u32, token_count: u32, context: &str) -> Result<(), DynError> {
     if token_id >= token_count {
-        return Err(format!("{context}: token id {token_id} is out of range").into());
+        return Err(StorageError::Format(format!("{context}: token id {token_id} is out of range")));
     }
 
     Ok(())
@@ -504,13 +491,13 @@ fn descriptor_count_for_ngram_order(ngram_order: usize) -> Result<u64, DynError>
     let ngram_order = u64_from_usize(ngram_order, "ngram order")?;
     SECTION_METADATA_COUNT
         .checked_add(ngram_order)
-        .ok_or_else(|| "section count overflow".into())
+        .ok_or_else(|| StorageError::Format("section count overflow".to_owned()))
 }
 
 fn bytes_for_len(len: usize, element_size: u64, context: &str) -> Result<u64, DynError> {
     let len = u64_from_usize(len, context)?;
     len.checked_mul(element_size)
-        .ok_or_else(|| format!("{context} byte size overflow").into())
+        .ok_or_else(|| StorageError::Format(format!("{context} byte size overflow")))
 }
 
 const fn align_to_eight(value: u64) -> u64 {
@@ -519,23 +506,23 @@ const fn align_to_eight(value: u64) -> u64 {
 
 fn checked_add(left: u64, right: u64, context: &str) -> Result<u64, DynError> {
     left.checked_add(right)
-        .ok_or_else(|| format!("{context} overflow").into())
+        .ok_or_else(|| StorageError::Format(format!("{context} overflow")))
 }
 
 fn usize_from_u32(value: u32, context: &str) -> Result<usize, DynError> {
-    usize::try_from(value).map_err(|_error| format!("{context} exceeds usize range").into())
+    usize::try_from(value).map_err(|_error| StorageError::Format(format!("{context} exceeds usize range")))
 }
 
 fn usize_from_u64(value: u64, context: &str) -> Result<usize, DynError> {
-    usize::try_from(value).map_err(|_error| format!("{context} exceeds usize range").into())
+    usize::try_from(value).map_err(|_error| StorageError::Format(format!("{context} exceeds usize range")))
 }
 
 fn u32_from_usize(value: usize, context: &str) -> Result<u32, DynError> {
-    u32::try_from(value).map_err(|_error| format!("{context} exceeds u32 range").into())
+    u32::try_from(value).map_err(|_error| StorageError::Format(format!("{context} exceeds u32 range")))
 }
 
 fn u64_from_usize(value: usize, context: &str) -> Result<u64, DynError> {
-    u64::try_from(value).map_err(|_error| format!("{context} exceeds u64 range").into())
+    u64::try_from(value).map_err(|_error| StorageError::Format(format!("{context} exceeds u64 range")))
 }
 
 fn aligned_metadata_end(section_count: u64) -> Result<u64, DynError> {
@@ -543,7 +530,7 @@ fn aligned_metadata_end(section_count: u64) -> Result<u64, DynError> {
     let descriptor_size = u64_from_usize(DESCRIPTOR_SIZE, "section descriptor size")?;
     let descriptor_bytes = section_count
         .checked_mul(descriptor_size)
-        .ok_or("section descriptor table byte size overflow")?;
+        .ok_or_else(|| StorageError::Format("section descriptor table byte size overflow".to_owned()))?;
     Ok(align_to_eight(checked_add(
         header_size,
         descriptor_bytes,
@@ -565,7 +552,7 @@ fn model_record_size(order: usize) -> Result<u64, DynError> {
 
 fn compute_checksum(bytes: &[u8]) -> Result<u64, DynError> {
     if bytes.len() < HEADER_SIZE {
-        return Err("cannot compute checksum: data is shorter than header".into());
+        return Err(StorageError::Format("cannot compute checksum: data is shorter than header".to_owned()));
     }
 
     let checksum_range = CHECKSUM_OFFSET..(CHECKSUM_OFFSET + CHECKSUM_SIZE);
@@ -588,22 +575,22 @@ fn compute_checksum(bytes: &[u8]) -> Result<u64, DynError> {
 fn vocab_blob_compression_flags(flags: u32) -> Result<u32, DynError> {
     let compression_flags = flags & SUPPORTED_FLAGS;
     if compression_flags.count_ones() > 1 {
-        return Err("multiple vocab blob compression flags are set".into());
+        return Err(StorageError::Format("multiple vocab blob compression flags are set".to_owned()));
     }
 
     let unsupported = flags & !SUPPORTED_FLAGS;
     if unsupported != 0 {
-        return Err(format!("unsupported storage flags: 0x{unsupported:08x}").into());
+        return Err(StorageError::Format(format!("unsupported storage flags: 0x{unsupported:08x}")));
     }
 
     Ok(compression_flags)
 }
 
 pub(crate) fn write_u64_at(bytes: &mut [u8], offset: usize, value: u64) -> Result<(), DynError> {
-    let end = offset.checked_add(8).ok_or("write_u64_at: offset overflow")?;
+    let end = offset.checked_add(8).ok_or_else(|| StorageError::Format("write_u64_at: offset overflow".to_owned()))?;
     let slice = bytes
         .get_mut(offset..end)
-        .ok_or("write_u64_at: offset out of bounds")?;
+        .ok_or_else(|| StorageError::Format("write_u64_at: offset out of bounds".to_owned()))?;
 
     slice.copy_from_slice(&value.to_le_bytes());
     Ok(())

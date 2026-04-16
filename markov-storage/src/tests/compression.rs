@@ -29,10 +29,11 @@ fn auto_compresses_repeated_vocab_blob_when_helpful() -> Result<(), crate::Stora
     )?;
     let loaded = load_sample_file(&path, order)?;
     ensure_eq(
-        loaded.id_to_token(),
-        chain.id_to_token(),
+        loaded.registry().tokens(),
+        chain.registry().tokens(),
         "auto-compressed file should round-trip vocabulary",
     )?;
+
     Ok(())
 }
 
@@ -58,8 +59,8 @@ fn explicit_compression_modes_round_trip() -> Result<(), crate::StorageError> {
 
         let loaded = load_sample_file(&path, order)?;
         ensure_eq(
-            loaded.id_to_token(),
-            chain.id_to_token(),
+            loaded.registry().tokens(),
+            chain.registry().tokens(),
             "compressed file should preserve vocabulary",
         )?;
     }

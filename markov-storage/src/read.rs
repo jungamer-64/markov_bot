@@ -29,7 +29,7 @@ pub(super) fn decode_chain(
 ) -> Result<MarkovChain, DynError> {
     let header = validate_header(bytes)?;
     let actual_ngram_order = NgramOrder::new(usize::try_from(header.ngram_order)
-        .map_err(|_error| StorageError::Format("header ngram_order exceeds usize range".into()))?)?;
+        .map_err(|_error| StorageError::Format("header ngram_order exceeds usize range".to_owned()))?)?;
     if actual_ngram_order != expected_ngram_order {
         return Err(StorageError::NgramOrderMismatch {
             expected: expected_ngram_order,
@@ -70,7 +70,7 @@ pub(super) fn decode_chain(
 pub(super) fn decode_snapshot(bytes: &[u8]) -> Result<super::StorageSnapshot, DynError> {
     let header = validate_header(bytes)?;
     let actual_ngram_order = NgramOrder::new(usize::try_from(header.ngram_order)
-        .map_err(|_error| StorageError::Format("header ngram_order exceeds usize range".into()))?)?;
+        .map_err(|_error| StorageError::Format("header ngram_order exceeds usize range".to_owned()))?)?;
 
     let expected_section_count = header.expected_section_count()?;
     if header.section_count != expected_section_count {
@@ -108,7 +108,7 @@ pub(super) fn decode_snapshot(bytes: &[u8]) -> Result<super::StorageSnapshot, Dy
 fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {
     if bytes.len() < HEADER_SIZE {
         return Err(StorageError::Format(
-            "storage file is shorter than the header".into(),
+            "storage file is shorter than the header".to_owned(),
         ));
     }
 
@@ -184,18 +184,16 @@ fn build_section_table(bytes: &[u8], header: &Header) -> Result<SectionTable, Dy
 
         let range = descriptor_range(bytes, &descriptor)?;
         if range.start < metadata_end {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "{} section starts before aligned metadata end",
                 section_label(&descriptor)
-            )
-            .into());
+            )));
         }
         if range.start < last_end {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "{} section overlaps previous section",
                 section_label(&descriptor)
-            )
-            .into());
+            )));
         }
         last_end = range.end;
 
@@ -212,13 +210,13 @@ fn validate_descriptor(
     ngram_order: u32,
 ) -> Result<(), DynError> {
     let kind = SectionKind::from_u32(descriptor.kind)
-        .ok_or_else(|| format!("unknown section kind: {}", descriptor.kind))?;
+        .ok_or_else(|| StorageError::Format(format!("unknown section kind: {}", descriptor.kind)))?;
 
     let expected_order = if index >= 3 {
         let model_index = index - 3;
         let ngram_order = usize_from_u32(ngram_order, "header ngram order")?;
         if model_index >= ngram_order {
-            return Err("descriptor table has too many model sections".into());
+            return Err(StorageError::Format("descriptor table has too many model sections".to_owned()));
         }
         Some(ngram_order - model_index)
     } else {
@@ -230,33 +228,30 @@ fn validate_descriptor(
         1 if kind == SectionKind::VocabBlob && descriptor.flags == 0 => {}
         2 if kind == SectionKind::Starts && descriptor.flags == 0 => {}
         3.. => {
-            let expected_order = expected_order.ok_or("missing expected model order")?;
+            let expected_order = expected_order.ok_or_else(|| StorageError::Format("missing expected model order".to_owned()))?;
             if kind != SectionKind::Model {
-                return Err(format!(
+                return Err(StorageError::Format(format!(
                     "section order mismatch at index {index}: expected model section"
-                )
-                .into());
+                )));
             }
 
             let actual_order = usize_from_u32(descriptor.flags, "model section order")?;
             if actual_order != expected_order {
-                return Err(format!(
+                return Err(StorageError::Format(format!(
                     "model section order mismatch at index {index}: expected {expected_order}, got {actual_order}"
-                )
-                .into());
+                )));
             }
         }
         _ => {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "section order mismatch at index {index}: got {}",
                 kind.label()
-            )
-            .into());
+            )));
         }
     }
 
     if descriptor_count < 3 {
-        return Err("section table is too short".into());
+        return Err(StorageError::Format("section table is too short".to_owned()));
     }
 
     Ok(())
@@ -268,9 +263,9 @@ fn descriptor_range(
 ) -> Result<std::ops::Range<usize>, DynError> {
     let start = usize_from_u64(descriptor.offset, "section offset")?;
     let size = usize_from_u64(descriptor.size, "section size")?;
-    let end = start.checked_add(size).ok_or("section range overflow")?;
+    let end = start.checked_add(size).ok_or_else(|| StorageError::Format("section range overflow".to_owned()))?;
     if end > bytes.len() {
-        return Err(format!("{} section exceeds file bounds", section_label(descriptor)).into());
+        return Err(StorageError::Format(format!("{} section exceeds file bounds", section_label(descriptor))));
     }
 
     Ok(start..end)
@@ -298,7 +293,7 @@ fn parse_storage(
     let expected_blob_size = vocab_offsets
         .last()
         .copied()
-        .ok_or("vocab offsets are empty")?;
+        .ok_or_else(|| StorageError::Format("vocab offsets are empty".to_owned()))?;
     let expected_blob_size = usize_from_u64(expected_blob_size, "vocab blob size")?;
     let vocab_blob = decode_vocab_blob(
         section_bytes(bytes, vocab_blob_entry)?,
@@ -329,12 +324,12 @@ fn parse_storage(
 fn section_bytes<'a>(bytes: &'a [u8], entry: &SectionEntry) -> Result<&'a [u8], DynError> {
     bytes
         .get(entry.range.clone())
-        .ok_or_else(|| "section range is invalid".into())
+        .ok_or_else(|| StorageError::Format("section range is invalid".to_owned()))
 }
 
 fn parse_u64_section(bytes: &[u8]) -> Result<Vec<u64>, DynError> {
     if !bytes.len().is_multiple_of(8) {
-        return Err("u64 section size is not a multiple of 8".into());
+        return Err(StorageError::Format("u64 section size is not a multiple of 8".to_owned()));
     }
 
     let mut values = Vec::with_capacity(bytes.len() / 8);
@@ -361,10 +356,9 @@ fn parse_starts_section(bytes: &[u8], ngram_order: usize) -> Result<Vec<StartRec
     )?;
     let actual_size = u64_from_usize(bytes.len(), "start section size")?;
     if actual_size != expected_size {
-        return Err(format!(
+        return Err(StorageError::Format(format!(
             "start section size mismatch: expected {expected_size}, got {actual_size}"
-        )
-        .into());
+        )));
     }
 
     let mut records = Vec::with_capacity(record_count);
@@ -400,10 +394,9 @@ fn parse_model_section(bytes: &[u8], order: usize) -> Result<ModelSection, DynEr
     )?;
     let actual_size = u64_from_usize(bytes.len(), "model section size")?;
     if actual_size != expected_size {
-        return Err(format!(
+        return Err(StorageError::Format(format!(
             "model section size mismatch: expected {expected_size}, got {actual_size}"
-        )
-        .into());
+        )));
     }
 
     let mut records = Vec::with_capacity(record_count);
@@ -441,7 +434,7 @@ fn read_prefix(bytes: &[u8], cursor: &mut usize, order: usize) -> Result<Prefix,
 
 fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
     if sections.models.len() != sections.ngram_order.as_usize()? {
-        return Err("storage model section count does not match ngram order".into());
+        return Err(StorageError::Format("storage model section count does not match ngram order".to_owned()));
     }
 
     let id_to_token = decode_vocab(
@@ -455,13 +448,13 @@ fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
         .enumerate()
         .map(|(index, token)| {
             let token_id =
-                TokenId::new(u32::try_from(index).map_err(|_error| "token count exceeds u32 range")?);
+                TokenId::new(u32::try_from(index).map_err(|_error| StorageError::Format("token count exceeds u32 range".to_owned()))?);
             Ok((token.clone(), token_id))
         })
         .collect::<Result<HashMap<_, _>, DynError>>()?;
 
-    let token_count =
-        u32::try_from(id_to_token.len()).map_err(|_error| "token count exceeds u32 range")?;
+    let registry = markov_core::token::TokenRegistry::from_parts(token_to_id, id_to_token)?;
+    let token_count = u32::try_from(registry.len()).map_err(|_| StorageError::Format("token count exceeds u32 range".to_owned()))?;
 
     let starts = decode_starts(
         sections.starts.as_slice(),
@@ -476,11 +469,10 @@ fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
 
     MarkovChain::from_parts(
         sections.ngram_order,
-        token_to_id,
-        id_to_token,
+        registry,
         models,
         starts,
-    ).map_err(|error| error.to_string().into())
+    ).map_err(|error| StorageError::Format(error.to_string()))
 }
 
 fn decode_starts(
@@ -494,21 +486,20 @@ fn decode_starts(
 
     for record in records {
         if record.prefix.len() != ngram_order {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "start record prefix length mismatch: expected {ngram_order}, got {}",
                 record.prefix.len()
-            )
-            .into());
+            )));
         }
         validate_prefix(record.prefix.as_slice(), token_count, "start record")?;
 
         if let Some(prev) = previous_prefix
             && prev >= record.prefix.as_slice()
         {
-            return Err("start records must be sorted by unique prefix".into());
+            return Err(StorageError::Format("start records must be sorted by unique prefix".to_owned()));
         }
         if record.cumulative.get() <= previous_cumulative.get() {
-            return Err("start records must have strictly increasing cumulative counts".into());
+            return Err(StorageError::Format("start records must have strictly increasing cumulative counts".to_owned()));
         }
 
         let count = Count::new(record.cumulative.get() - previous_cumulative.get());
@@ -530,13 +521,12 @@ fn decode_models(
     for expected_order in 1..=ngram_order {
         let section = sections
             .get(ngram_order - expected_order)
-            .ok_or("model section is missing")?;
+            .ok_or_else(|| StorageError::Format("model section is missing".to_owned()))?;
         if section.order != expected_order {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "model section order mismatch: expected {expected_order}, got {}",
                 section.order
-            )
-            .into());
+            )));
         }
 
         models.push(decode_model_section(section, token_count)?);
@@ -555,42 +545,39 @@ fn decode_model_section(
 
     for record in &section.records {
         if record.prefix.len() != section.order {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "model{} record prefix length mismatch: expected {}, got {}",
                 section.order,
                 section.order,
                 record.prefix.len()
-            )
-            .into());
+            )));
         }
         validate_prefix(record.prefix.as_slice(), token_count, "model record")?;
 
         if let Some(prev) = previous_prefix
             && prev >= record.prefix.as_slice()
         {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "model{} records must be sorted by unique prefix",
                 section.order
-            )
-            .into());
+            )));
         }
 
         let edge_start = usize_from_u32(record.edge_start, "model edge start")?;
         if edge_start != expected_edge_start {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "model{} edge_start mismatch: expected {expected_edge_start}, got {edge_start}",
                 section.order
-            )
-            .into());
+            )));
         }
         let edge_len = usize_from_u32(record.edge_len, "model edge len")?;
         let edge_end = edge_start
             .checked_add(edge_len)
-            .ok_or("model edge range overflow")?;
+            .ok_or_else(|| StorageError::Format("model edge range overflow".to_owned()))?;
         let edge_slice = section
             .edges
             .get(edge_start..edge_end)
-            .ok_or_else(|| format!("model{} edge range is invalid", section.order))?;
+            .ok_or_else(|| StorageError::Format(format!("model{} edge range is invalid", section.order)))?;
 
         let mut edges = HashMap::with_capacity(edge_slice.len());
         let mut previous_cumulative = Count::ZERO;
@@ -601,18 +588,16 @@ fn decode_model_section(
             if let Some(prev_next) = previous_next
                 && prev_next >= edge.next
             {
-                return Err(format!(
+                return Err(StorageError::Format(format!(
                     "model{} edges must be sorted by unique token id",
                     section.order
-                )
-                .into());
+                )));
             }
             if edge.cumulative.get() <= previous_cumulative.get() {
-                return Err(format!(
+                return Err(StorageError::Format(format!(
                     "model{} edges must have strictly increasing cumulative counts",
                     section.order
-                )
-                .into());
+                )));
             }
 
             edges.insert(edge.next, Count::new(edge.cumulative.get() - previous_cumulative.get()));
@@ -621,11 +606,10 @@ fn decode_model_section(
         }
 
         if previous_cumulative.get() != record.total.get() {
-            return Err(format!(
+            return Err(StorageError::Format(format!(
                 "model{} total mismatch: expected {}, got {}",
                 section.order, previous_cumulative.get(), record.total.get()
-            )
-            .into());
+            )));
         }
 
         model.insert(record.prefix.clone(), edges);
@@ -634,7 +618,7 @@ fn decode_model_section(
     }
 
     if expected_edge_start != section.edges.len() {
-        return Err(format!("model{} edges contain trailing data", section.order).into());
+        return Err(StorageError::Format(format!("model{} edges contain trailing data", section.order)));
     }
 
     Ok(model)
@@ -642,18 +626,18 @@ fn decode_model_section(
 
 fn decode_vocab(offsets: &[u64], blob: &[u8]) -> Result<Vec<String>, DynError> {
     if offsets.is_empty() {
-        return Err("vocab offsets are empty".into());
+        return Err(StorageError::Format("vocab offsets are empty".to_owned()));
     }
 
     let mut tokens = Vec::with_capacity(offsets.len().saturating_sub(1));
     for pair in offsets.windows(2) {
         let [start_offset, end_offset] = <&[u64; 2]>::try_from(pair)
-            .map_err(|_error| "vocab offset pair must contain two values")?;
+            .map_err(|_error| StorageError::Format("vocab offset pair must contain two values".to_owned()))?;
         let start = usize_from_u64(*start_offset, "vocab token start")?;
         let end = usize_from_u64(*end_offset, "vocab token end")?;
-        let token_bytes = blob.get(start..end).ok_or("vocab token range is invalid")?;
+        let token_bytes = blob.get(start..end).ok_or_else(|| StorageError::Format("vocab token range is invalid".to_owned()))?;
         let token = str::from_utf8(token_bytes)
-            .map_err(|_error| "vocab token is not valid UTF-8")?
+            .map_err(|_error| StorageError::Format("vocab token is not valid UTF-8".to_owned()))?
             .to_owned();
         tokens.push(token);
     }
@@ -663,14 +647,14 @@ fn decode_vocab(offsets: &[u64], blob: &[u8]) -> Result<Vec<String>, DynError> {
 
 fn validate_vocab_offsets(offsets: &[u64]) -> Result<(), DynError> {
     if offsets.first().copied() != Some(0) {
-        return Err("vocab offsets must start with 0".into());
+        return Err(StorageError::Format("vocab offsets must start with 0".to_owned()));
     }
 
     for pair in offsets.windows(2) {
         let [start_offset, end_offset] = <&[u64; 2]>::try_from(pair)
-            .map_err(|_error| "vocab offset pair must contain two values")?;
+            .map_err(|_error| StorageError::Format("vocab offset pair must contain two values".to_owned()))?;
         if start_offset > end_offset {
-            return Err("vocab offsets must be non-decreasing".into());
+            return Err(StorageError::Format("vocab offsets must be non-decreasing".to_owned()));
         }
     }
 
@@ -699,7 +683,7 @@ fn decode_vocab_blob(
     } else if compression_flags == 0 {
         decode_vocab_blob_plain(vocab_blob_bytes, expected_size)
     } else {
-        Err("unsupported vocab blob compression flags".into())
+        Err(StorageError::Format("unsupported vocab blob compression flags".to_owned()))
     }
 }
 
@@ -708,11 +692,10 @@ fn decode_vocab_blob_plain(
     expected_size: usize,
 ) -> Result<Vec<u8>, DynError> {
     if vocab_blob_bytes.len() != expected_size {
-        return Err(format!(
+        return Err(StorageError::Format(format!(
             "vocab blob size mismatch: expected {expected_size}, got {}",
             vocab_blob_bytes.len()
-        )
-        .into());
+        )));
     }
 
     Ok(vocab_blob_bytes.to_vec())
@@ -730,7 +713,7 @@ fn decode_vocab_blob_rle(
     while decoded.len() < expected_size {
         let control = *vocab_blob_bytes
             .get(cursor)
-            .ok_or("compressed vocab blob is truncated")?;
+            .ok_or_else(|| StorageError::Format("compressed vocab blob is truncated".to_owned()))?;
         cursor += 1;
 
         if control < REPEAT_CONTROL_THRESHOLD {
@@ -753,7 +736,7 @@ fn decode_vocab_blob_rle(
     }
 
     if cursor != vocab_blob_bytes.len() {
-        return Err("compressed vocab blob has trailing bytes".into());
+        return Err(StorageError::Format("compressed vocab blob has trailing bytes".to_owned()));
     }
 
     Ok(decoded)
@@ -765,7 +748,7 @@ fn decode_vocab_blob_zstd(
 ) -> Result<Vec<u8>, DynError> {
     let decoded = zstd::bulk::decompress(vocab_blob_bytes, expected_size)?;
     if decoded.len() != expected_size {
-        return Err("zstd vocab blob size does not match expected decoded size".into());
+        return Err(StorageError::Format("zstd vocab blob size does not match expected decoded size".to_owned()));
     }
 
     Ok(decoded)
@@ -774,9 +757,9 @@ fn decode_vocab_blob_zstd(
 fn validate_rle_expected_size(encoded_size: usize, expected_size: usize) -> Result<(), DynError> {
     let max_decoded_size = encoded_size
         .checked_mul(MAX_RLE_EXPANSION_PER_ENCODED_BYTE)
-        .ok_or("compressed vocab blob expansion bound overflow")?;
+        .ok_or_else(|| StorageError::Format("compressed vocab blob expansion bound overflow".to_owned()))?;
     if expected_size > max_decoded_size {
-        return Err("compressed vocab blob decoded size exceeds supported expansion bound".into());
+        return Err(StorageError::Format("compressed vocab blob decoded size exceeds supported expansion bound".to_owned()));
     }
 
     Ok(())
@@ -792,11 +775,11 @@ fn decode_literal_chunk(
     let literal_len = usize::from(control) + 1;
     let end = cursor
         .checked_add(literal_len)
-        .ok_or("compressed vocab literal range overflow")?;
+        .ok_or_else(|| StorageError::Format("compressed vocab literal range overflow".to_owned()))?;
 
     let chunk = source
         .get(*cursor..end)
-        .ok_or("compressed vocab blob literal chunk is truncated")?;
+        .ok_or_else(|| StorageError::Format("compressed vocab blob literal chunk is truncated".to_owned()))?;
 
     append_chunk(
         decoded,
@@ -819,15 +802,15 @@ fn decode_repeat_chunk(
     let repeat_len = usize::from(control - REPEAT_CONTROL_THRESHOLD) + REPEAT_CHUNK_MIN;
     let value = *source
         .get(*cursor)
-        .ok_or("compressed vocab blob repeat chunk is truncated")?;
+        .ok_or_else(|| StorageError::Format("compressed vocab blob repeat chunk is truncated".to_owned()))?;
     *cursor += 1;
 
     let next_size = decoded
         .len()
         .checked_add(repeat_len)
-        .ok_or("compressed vocab blob size overflow")?;
+        .ok_or_else(|| StorageError::Format("compressed vocab blob size overflow".to_owned()))?;
     if next_size > expected_size {
-        return Err("compressed vocab blob repeat exceeds expected decoded size".into());
+        return Err(StorageError::Format("compressed vocab blob repeat exceeds expected decoded size".to_owned()));
     }
 
     decoded.resize(next_size, value);
@@ -844,9 +827,9 @@ fn append_chunk(
     let next_size = decoded
         .len()
         .checked_add(chunk.len())
-        .ok_or("compressed vocab blob size overflow")?;
+        .ok_or_else(|| StorageError::Format("compressed vocab blob size overflow".to_owned()))?;
     if next_size > expected_size {
-        return Err(format!("{context} exceeds expected decoded size").into());
+        return Err(StorageError::Format(format!("{context} exceeds expected decoded size")));
     }
 
     decoded.extend_from_slice(chunk);
@@ -854,10 +837,10 @@ fn append_chunk(
 }
 
 fn read_exact<'a>(bytes: &'a [u8], cursor: &mut usize, count: usize) -> Result<&'a [u8], DynError> {
-    let end = cursor.checked_add(count).ok_or("cursor overflow")?;
+    let end = cursor.checked_add(count).ok_or_else(|| StorageError::Format("cursor overflow".to_owned()))?;
     let slice = bytes
         .get(*cursor..end)
-        .ok_or("unexpected EOF while reading")?;
+        .ok_or_else(|| StorageError::Format("unexpected EOF while reading".to_owned()))?;
     *cursor = end;
     Ok(slice)
 }
@@ -880,5 +863,5 @@ fn bytes_for_count(count: usize, element_size: u64, context: &str) -> Result<u64
     let count = u64_from_usize(count, context)?;
     count
         .checked_mul(element_size)
-        .ok_or_else(|| format!("{context} byte size overflow").into())
+        .ok_or_else(|| StorageError::Format(format!("{context} byte size overflow")))
 }

@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+
+use crate::error::MarkovError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TokenId(u32);
@@ -10,18 +13,6 @@ pub const EOS_TOKEN: &str = "<EOS>";
 
 pub const BOS_ID: TokenId = TokenId(0);
 pub const EOS_ID: TokenId = TokenId(1);
-
-impl From<u32> for TokenId {
-    fn from(value: u32) -> Self {
-        Self(value)
-    }
-}
-
-impl From<TokenId> for u32 {
-    fn from(value: TokenId) -> Self {
-        value.0
-    }
-}
 
 impl TokenId {
     #[must_use]
@@ -41,20 +32,109 @@ impl fmt::Display for TokenId {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct TokenRegistry {
+    token_to_id: HashMap<String, TokenId>,
+    id_to_token: Vec<String>,
+}
+
+impl TokenRegistry {
+    #[must_use]
+    pub fn new() -> Self {
+        let mut registry = Self {
+            token_to_id: HashMap::new(),
+            id_to_token: Vec::new(),
+        };
+
+        // Initialize with special tokens
+        registry.id_to_token.push(BOS_TOKEN.to_owned());
+        registry.token_to_id.insert(BOS_TOKEN.to_owned(), BOS_ID);
+
+        registry.id_to_token.push(EOS_TOKEN.to_owned());
+        registry.token_to_id.insert(EOS_TOKEN.to_owned(), EOS_ID);
+
+        registry
+    }
+
+    /// # Errors
+    /// Returns `MarkovError::TokenLimitExceeded` if the number of tokens exceeds `u32::MAX`.
+    pub fn get_or_insert(&mut self, token: &str) -> Result<TokenId, MarkovError> {
+        if let Some(id) = self.token_to_id.get(token) {
+            return Ok(*id);
+        }
+
+        let id_val = u32::try_from(self.id_to_token.len())
+            .map_err(|_| MarkovError::TokenLimitExceeded)?;
+        let id = TokenId::new(id_val);
+
+        self.id_to_token.push(token.to_owned());
+        self.token_to_id.insert(token.to_owned(), id);
+
+        Ok(id)
+    }
+
+    #[must_use]
+    pub fn get_token(&self, id: TokenId) -> Option<&str> {
+        let idx = usize::try_from(id.get()).ok()?;
+        self.id_to_token.get(idx).map(String::as_str)
+    }
+
+    #[must_use]
+    pub fn get_id(&self, token: &str) -> Option<TokenId> {
+        self.token_to_id.get(token).copied()
+    }
+
+    #[must_use]
+    pub fn tokens(&self) -> &[String] {
+        &self.id_to_token
+    }
+
+    #[must_use]
+    pub const fn token_to_id(&self) -> &HashMap<String, TokenId> {
+        &self.token_to_id
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.id_to_token.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.id_to_token.is_empty()
+    }
+
+    /// # Errors
+    /// Returns `MarkovError::Boundary` if the parts are inconsistent (e.g., special tokens missing or misaligned).
+    pub fn from_parts(
+        token_to_id: HashMap<String, TokenId>,
+        id_to_token: Vec<String>,
+    ) -> Result<Self, MarkovError> {
+        if id_to_token.len() != token_to_id.len() {
+            return Err(MarkovError::Boundary("Token registry parts size mismatch".into()));
+        }
+
+        if id_to_token.get(0).map(String::as_str) != Some(BOS_TOKEN)
+            || token_to_id.get(BOS_TOKEN) != Some(&BOS_ID)
+        {
+            return Err(MarkovError::Boundary("BOS token missing or misaligned".into()));
+        }
+
+        if id_to_token.get(1).map(String::as_str) != Some(EOS_TOKEN)
+            || token_to_id.get(EOS_TOKEN) != Some(&EOS_ID)
+        {
+            return Err(MarkovError::Boundary("EOS token missing or misaligned".into()));
+        }
+
+        Ok(Self {
+            token_to_id,
+            id_to_token,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Count(u64);
-
-impl From<u64> for Count {
-    fn from(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-impl From<Count> for u64 {
-    fn from(value: Count) -> Self {
-        value.0
-    }
-}
 
 impl Count {
     pub const ZERO: Self = Self(0);
@@ -83,12 +163,6 @@ impl fmt::Display for Count {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Prefix(Vec<TokenId>);
-
-impl From<Vec<TokenId>> for Prefix {
-    fn from(value: Vec<TokenId>) -> Self {
-        Self(value)
-    }
-}
 
 impl Prefix {
     #[must_use]

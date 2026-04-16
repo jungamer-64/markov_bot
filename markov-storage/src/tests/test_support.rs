@@ -30,7 +30,7 @@ pub(super) fn ensure(condition: bool, message: &str) -> Result<(), StorageError>
     if condition {
         Ok(())
     } else {
-        Err(message.into())
+        Err(StorageError::Format(message.to_owned()))
     }
 }
 
@@ -127,12 +127,12 @@ pub(super) fn descriptor(bytes: &[u8], index: usize) -> Result<DescriptorView, S
 
 pub(super) fn descriptor_count(bytes: &[u8]) -> Result<usize, StorageError> {
     let section_count = read_u64_at(bytes, SECTION_COUNT_OFFSET)?;
-    usize::try_from(section_count).map_err(|_error| "section count should fit usize".into())
+    usize::try_from(section_count).map_err(|_error| StorageError::Format("section count should fit usize".to_owned()))
 }
 
 pub(super) fn model_descriptor_index(bytes: &[u8], order: usize) -> Result<usize, StorageError> {
     let expected_flags =
-        u32::try_from(order).map_err(|_error| "order exceeds u32 range".to_owned())?;
+        u32::try_from(order).map_err(|_error| StorageError::Format("order exceeds u32 range".to_owned()))?;
     let count = descriptor_count(bytes)?;
 
     for index in 0..count {
@@ -142,24 +142,24 @@ pub(super) fn model_descriptor_index(bytes: &[u8], order: usize) -> Result<usize
         }
     }
 
-    Err(format!("descriptor not found for model order {order}").into())
+    Err(StorageError::Format(format!("descriptor not found for model order {order}")))
 }
 
 pub(super) fn section_body_offset(bytes: &[u8], index: usize) -> Result<usize, StorageError> {
     usize::try_from(descriptor(bytes, index)?.offset)
-        .map_err(|_error| "section offset should fit usize".into())
+        .map_err(|_error| StorageError::Format("section offset should fit usize".to_owned()))
 }
 
 pub(super) fn descriptor_flags_offset(index: usize) -> Result<usize, StorageError> {
     let offset = descriptor_start_offset(index)?;
     offset.checked_add(4)
-        .ok_or_else(|| "descriptor flags offset overflow".into())
+        .ok_or_else(|| StorageError::Format("descriptor flags offset overflow".to_owned()))
 }
 
 pub(super) fn descriptor_size_offset(index: usize) -> Result<usize, StorageError> {
     let offset = descriptor_start_offset(index)?;
     offset.checked_add(16)
-        .ok_or_else(|| "descriptor size offset overflow".into())
+        .ok_or_else(|| StorageError::Format("descriptor size offset overflow".to_owned()))
 }
 
 pub(super) fn rewrite_checksum(bytes: &mut [u8]) -> Result<(), StorageError> {
@@ -175,7 +175,7 @@ pub(super) fn read_u32_at(bytes: &[u8], offset: usize) -> Result<u32, StorageErr
     let end = offset + 4;
     let slice = bytes
         .get(offset..end)
-        .ok_or_else(|| "u32 read range must be within buffer".to_owned())?;
+        .ok_or_else(|| StorageError::Format("u32 read range must be within buffer".to_owned()))?;
     let mut raw = [0_u8; 4];
     raw.copy_from_slice(slice);
     Ok(u32::from_le_bytes(raw))
@@ -189,7 +189,7 @@ pub(super) fn write_u32_at(
     let end = offset + 4;
     let target = bytes
         .get_mut(offset..end)
-        .ok_or_else(|| "u32 write range must be within buffer".to_owned())?;
+        .ok_or_else(|| StorageError::Format("u32 write range must be within buffer".to_owned()))?;
     target.copy_from_slice(value.to_le_bytes().as_slice());
     Ok(())
 }
@@ -198,7 +198,7 @@ pub(super) fn read_u64_at(bytes: &[u8], offset: usize) -> Result<u64, StorageErr
     let end = offset + 8;
     let slice = bytes
         .get(offset..end)
-        .ok_or_else(|| "u64 read range must be within buffer".to_owned())?;
+        .ok_or_else(|| StorageError::Format("u64 read range must be within buffer".to_owned()))?;
     let mut raw = [0_u8; 8];
     raw.copy_from_slice(slice);
     Ok(u64::from_le_bytes(raw))
@@ -212,7 +212,7 @@ pub(super) fn write_u64_at(
     let end = offset + 8;
     let target = bytes
         .get_mut(offset..end)
-        .ok_or_else(|| "u64 write range must be within buffer".to_owned())?;
+        .ok_or_else(|| StorageError::Format("u64 write range must be within buffer".to_owned()))?;
     target.copy_from_slice(value.to_le_bytes().as_slice());
     Ok(())
 }
@@ -222,9 +222,9 @@ fn descriptor_start_offset(index: usize) -> Result<usize, StorageError> {
         .checked_add(
             index
                 .checked_mul(DESCRIPTOR_SIZE)
-                .ok_or_else(|| "descriptor start offset overflow".to_owned())?,
+                .ok_or_else(|| StorageError::Format("descriptor start offset overflow".to_owned()))?,
         )
-        .ok_or_else(|| "descriptor start offset overflow".into())
+        .ok_or_else(|| StorageError::Format("descriptor start offset overflow".to_owned()))
 }
 
 #[test]

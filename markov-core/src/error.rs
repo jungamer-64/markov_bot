@@ -32,15 +32,3 @@ pub enum MarkovError {
     #[error("Training model index is out of bounds")]
     ModelIndexOutOfBounds,
 }
-
-impl From<&str> for MarkovError {
-    fn from(value: &str) -> Self {
-        Self::Boundary(value.to_owned())
-    }
-}
-
-impl From<String> for MarkovError {
-    fn from(value: String) -> Self {
-        Self::Boundary(value)
-    }
-}
