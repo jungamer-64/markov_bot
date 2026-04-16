@@ -1,5 +1,7 @@
 use std::fs;
 
+use markov_core::NgramOrder;
+
 use super::super::StorageCompressionMode;
 use super::helpers::{
     FLAGS_OFFSET, ensure_eq, ensure_ne, load_sample_file, sample_chain_with_order,
@@ -9,7 +11,8 @@ use crate::{FLAG_VOCAB_BLOB_LZ4_FLEX, FLAG_VOCAB_BLOB_RLE, FLAG_VOCAB_BLOB_ZSTD}
 
 #[test]
 fn auto_compresses_repeated_vocab_blob_when_helpful() -> Result<(), crate::StorageError> {
-    let mut chain = sample_chain_with_order(7)?;
+    let order = NgramOrder::new(7)?;
+    let mut chain = sample_chain_with_order(order)?;
     for i in 0..40 {
         chain.train_tokens(&[format!("token_{i:064}")])?;
     }
@@ -24,7 +27,7 @@ fn auto_compresses_repeated_vocab_blob_when_helpful() -> Result<(), crate::Stora
         &0,
         "auto mode should choose a compressed representation",
     )?;
-    let loaded = load_sample_file(&path, 7)?;
+    let loaded = load_sample_file(&path, order)?;
     ensure_eq(
         loaded.id_to_token(),
         chain.id_to_token(),
@@ -35,7 +38,8 @@ fn auto_compresses_repeated_vocab_blob_when_helpful() -> Result<(), crate::Stora
 
 #[test]
 fn explicit_compression_modes_round_trip() -> Result<(), crate::StorageError> {
-    let chain = sample_chain_with_order(6)?;
+    let order = NgramOrder::new(6)?;
+    let chain = sample_chain_with_order(order)?;
 
     for (mode, expected_flag) in [
         (StorageCompressionMode::Uncompressed, 0),
@@ -53,7 +57,7 @@ fn explicit_compression_modes_round_trip() -> Result<(), crate::StorageError> {
             "compression flag should match requested mode",
         )?;
 
-        let loaded = load_sample_file(&path, 6)?;
+        let loaded = load_sample_file(&path, order)?;
         ensure_eq(
             loaded.id_to_token(),
             chain.id_to_token(),

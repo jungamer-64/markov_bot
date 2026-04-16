@@ -45,9 +45,9 @@ async fn async_main() -> Result<(), DynError> {
     println!(
         "Bot started. target_channel_id=unset(use /set_channel), cooldown={}s, generation<= {} words, temp={}, min_words_before_eos={}, storage_min_edge_count={}, storage_compression={}",
         config.reply_cooldown_secs(),
-        config.max_words(),
-        config.generation_temperature(),
-        config.min_words_before_eos(),
+        config.max_words().get(),
+        config.temperature().get(),
+        config.min_words_before_eos().get(),
         config.storage_min_edge_count(),
         config.storage_compression().as_env_value(),
     );

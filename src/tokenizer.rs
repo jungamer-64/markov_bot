@@ -7,20 +7,21 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::config::DynError;
 
 #[derive(Clone)]
-pub(crate) struct Tokenizer {
-    lindera_tokenizer: Option<LinderaTokenizer>,
-}
-
-impl Default for Tokenizer {
-    fn default() -> Self {
-        Self::new()
-    }
+pub(crate) enum Tokenizer {
+    Lindera(LinderaTokenizer),
+    Fallback,
 }
 
 impl Tokenizer {
-    pub(crate) fn new() -> Self {
-        Self {
-            lindera_tokenizer: build_lindera_tokenizer().ok(),
+    /// # Errors
+    /// Returns `DynError` if the dictionary fails to load.
+    pub(crate) fn new() -> Result<Self, DynError> {
+        match build_lindera_tokenizer() {
+            Ok(tokenizer) => Ok(Self::Lindera(tokenizer)),
+            Err(error) => {
+                eprintln!("Warning: Failed to initialize Lindera (Japanese tokenizer), falling back to unicode-segmentation: {error}");
+                Ok(Self::Fallback)
+            }
         }
     }
 
@@ -30,27 +31,25 @@ impl Tokenizer {
             return Vec::new();
         }
 
-        match self.tokenize_with_lindera(&normalized) {
-            Ok(tokens) if !tokens.is_empty() => tokens,
-            _ => fallback_tokenize(&normalized),
+        match self {
+            Self::Lindera(tokenizer) => match tokenize_with_lindera(tokenizer, &normalized) {
+                Ok(tokens) if !tokens.is_empty() => tokens,
+                _ => fallback_tokenize(&normalized),
+            },
+            Self::Fallback => fallback_tokenize(&normalized),
         }
     }
+}
 
-    fn tokenize_with_lindera(&self, text: &str) -> Result<Vec<String>, DynError> {
-        let tokenizer = self
-            .lindera_tokenizer
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("lindera tokenizer is not initialized"))?;
+fn tokenize_with_lindera(tokenizer: &LinderaTokenizer, text: &str) -> Result<Vec<String>, DynError> {
+    let tokens = tokenizer
+        .tokenize(text)?
+        .into_iter()
+        .map(|token| token.surface.as_ref().to_owned())
+        .filter(|token| !token.trim().is_empty())
+        .collect::<Vec<_>>();
 
-        let tokens = tokenizer
-            .tokenize(text)?
-            .into_iter()
-            .map(|token| token.surface.as_ref().to_owned())
-            .filter(|token| !token.trim().is_empty())
-            .collect::<Vec<_>>();
-
-        Ok(tokens)
-    }
+    Ok(tokens)
 }
 
 fn build_lindera_tokenizer() -> Result<LinderaTokenizer, DynError> {

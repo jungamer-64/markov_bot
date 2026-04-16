@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use crate::{
     config::DynError,
-    markov::{Count, Prefix, TokenId},
+    markov::{Count, NgramOrder, Prefix, TokenId},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -135,7 +135,7 @@ pub(super) struct VocabSections {
 
 #[derive(Debug, Clone)]
 pub(super) struct StorageSections {
-    pub(super) ngram_order: usize,
+    pub(super) ngram_order: NgramOrder,
     pub(super) vocab: VocabSections,
     pub(super) starts: Vec<StartRecord>,
     pub(super) models: Vec<ModelSection>,

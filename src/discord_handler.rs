@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use markov_core::{GenerationOptions, MarkovChain};
+use markov_core::{GenerationOptions, MarkovChain, NgramOrder};
 use markov_storage::{StorageCompressionMode, decode_chain, encode_chain};
 use rand::rng;
 use tokio::fs;
@@ -64,7 +64,7 @@ impl DiscordHandler {
         tokio::spawn(actor.run());
 
         Ok(Self {
-            tokenizer: Tokenizer::new(),
+            tokenizer: Tokenizer::new()?,
             tx,
         })
     }
@@ -195,10 +195,16 @@ impl HandlerActor {
         let mut rng = rng();
         let options = GenerationOptions::new(
             self.config.max_words(),
-            self.config.generation_temperature(),
+            self.config.temperature(),
             self.config.min_words_before_eos(),
         ).unwrap_or_else(|_| {
-            GenerationOptions::new(20, 1.0, 0).expect("default options should be valid")
+            // This case should be unreachable if BotConfig is valid, but we provide a fallback.
+            let fallback_options = GenerationOptions::new(
+                markov_core::MaxWords::DEFAULT,
+                markov_core::Temperature::DEFAULT,
+                markov_core::MinWordsBeforeEos::DEFAULT,
+            ).expect("default options must be valid");
+            fallback_options
         });
 
         self.state
@@ -220,7 +226,7 @@ fn can_reply(last_reply_at: Option<Instant>, cooldown: Duration) -> bool {
     last_reply_at.is_none_or(|last| last.elapsed() >= cooldown)
 }
 
-async fn load_chain(path: &Path, expected_ngram_order: usize) -> Result<MarkovChain, DynError> {
+async fn load_chain(path: &Path, expected_ngram_order: NgramOrder) -> Result<MarkovChain, DynError> {
     if !path.exists() {
         return MarkovChain::new(expected_ngram_order).map_err(|error| error.into());
     }

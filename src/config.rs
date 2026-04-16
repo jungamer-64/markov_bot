@@ -1,7 +1,7 @@
 use std::{env, error::Error, path::PathBuf};
 
 use anyhow::{Error as AnyhowError, anyhow};
-use markov_core::{DEFAULT_NGRAM_ORDER, validate_ngram_order};
+use markov_core::{MaxWords, MinWordsBeforeEos, NgramOrder, Temperature};
 use markov_storage::StorageCompressionMode;
 
 pub(crate) type DynError = AnyhowError;
@@ -10,12 +10,12 @@ pub(crate) type DynError = AnyhowError;
 pub(super) struct BotConfig {
     discord_token: String,
     data_path: PathBuf,
-    ngram_order: usize,
+    ngram_order: NgramOrder,
     storage_min_edge_count: u64,
     storage_compression: StorageCompressionMode,
-    max_words: usize,
-    generation_temperature: f64,
-    min_words_before_eos: usize,
+    max_words: MaxWords,
+    temperature: Temperature,
+    min_words_before_eos: MinWordsBeforeEos,
     reply_cooldown_secs: u64,
 }
 
@@ -28,7 +28,7 @@ impl BotConfig {
         &self.data_path
     }
 
-    pub(crate) fn ngram_order(&self) -> usize {
+    pub(crate) fn ngram_order(&self) -> NgramOrder {
         self.ngram_order
     }
 
@@ -40,15 +40,15 @@ impl BotConfig {
         self.storage_compression
     }
 
-    pub(crate) fn max_words(&self) -> usize {
+    pub(crate) fn max_words(&self) -> MaxWords {
         self.max_words
     }
 
-    pub(crate) fn generation_temperature(&self) -> f64 {
-        self.generation_temperature
+    pub(crate) fn temperature(&self) -> Temperature {
+        self.temperature
     }
 
-    pub(crate) fn min_words_before_eos(&self) -> usize {
+    pub(crate) fn min_words_before_eos(&self) -> MinWordsBeforeEos {
         self.min_words_before_eos
     }
 
@@ -70,10 +70,12 @@ impl BotConfig {
         let data_path = get_var("MARKOV_DATA_PATH")
             .map_or_else(|_| PathBuf::from("data/markov_chain.mkv3"), PathBuf::from);
 
-        let ngram_order =
-            env_parse_or_default_with(&mut get_var, "MARKOV_NGRAM_ORDER", DEFAULT_NGRAM_ORDER)?;
-        validate_ngram_order(ngram_order, "MARKOV_NGRAM_ORDER")
-            .map_err(|error| AnyhowError::msg(error.to_string()))?;
+        let ngram_order = NgramOrder::new(env_parse_or_default_with(
+            &mut get_var,
+            "MARKOV_NGRAM_ORDER",
+            NgramOrder::DEFAULT.as_usize(),
+        )?)
+        .map_err(|error| AnyhowError::msg(error.to_string()))?;
 
         let storage_min_edge_count =
             env_parse_or_default_with(&mut get_var, "STORAGE_MIN_EDGE_COUNT", 1_u64)?;
@@ -87,20 +89,27 @@ impl BotConfig {
             Err(error) => return Err(error.into()),
         };
 
-        let max_words = env_parse_or_default_with(&mut get_var, "REPLY_MAX_WORDS", 20_usize)?;
-        if max_words == 0 {
-            return Err(anyhow!("REPLY_MAX_WORDS must be >= 1"));
-        }
+        let max_words = MaxWords::new(env_parse_or_default_with(
+            &mut get_var,
+            "REPLY_MAX_WORDS",
+            MaxWords::DEFAULT.get(),
+        )?)
+        .map_err(|error| AnyhowError::msg(error.to_string()))?;
 
-        let generation_temperature =
-            env_parse_or_default_with(&mut get_var, "REPLY_TEMPERATURE", 1.0_f64)?;
-        if !generation_temperature.is_finite() || generation_temperature <= 0.0 {
-            return Err(anyhow!("REPLY_TEMPERATURE must be a finite value > 0"));
-        }
+        let temperature = Temperature::new(env_parse_or_default_with(
+            &mut get_var,
+            "REPLY_TEMPERATURE",
+            Temperature::DEFAULT.get(),
+        )?)
+        .map_err(|error| AnyhowError::msg(error.to_string()))?;
 
-        let min_words_before_eos =
-            env_parse_or_default_with(&mut get_var, "REPLY_MIN_WORDS_BEFORE_EOS", 0_usize)?;
-        if min_words_before_eos > max_words {
+        let min_words_before_eos = MinWordsBeforeEos::new(env_parse_or_default_with(
+            &mut get_var,
+            "REPLY_MIN_WORDS_BEFORE_EOS",
+            MinWordsBeforeEos::DEFAULT.get(),
+        )?);
+
+        if min_words_before_eos.get() > max_words.get() {
             return Err(anyhow!(
                 "REPLY_MIN_WORDS_BEFORE_EOS must be <= REPLY_MAX_WORDS"
             ));
@@ -116,7 +125,7 @@ impl BotConfig {
             storage_min_edge_count,
             storage_compression,
             max_words,
-            generation_temperature,
+            temperature,
             min_words_before_eos,
             reply_cooldown_secs,
         })
@@ -173,7 +182,7 @@ mod tests {
     #[test]
     fn defaults_ngram_order_to_six() -> Result<(), super::DynError> {
         let config = config_from_pairs(&[("DISCORD_TOKEN", "token")])?;
-        ensure(config.ngram_order == 6, "default ngram order should be 6")?;
+        ensure(config.ngram_order().as_usize() == 6, "default ngram order should be 6")?;
         Ok(())
     }
 
@@ -185,11 +194,11 @@ mod tests {
         let sixteen =
             config_from_pairs(&[("DISCORD_TOKEN", "token"), ("MARKOV_NGRAM_ORDER", "16")])?;
 
-        ensure(lower.ngram_order == 1, "ngram order 1 should be accepted")?;
-        ensure(upper.ngram_order == 6, "ngram order 6 should be accepted")?;
-        ensure(seven.ngram_order == 7, "ngram order 7 should be accepted")?;
+        ensure(lower.ngram_order().as_usize() == 1, "ngram order 1 should be accepted")?;
+        ensure(upper.ngram_order().as_usize() == 6, "ngram order 6 should be accepted")?;
+        ensure(seven.ngram_order().as_usize() == 7, "ngram order 7 should be accepted")?;
         ensure(
-            sixteen.ngram_order == 16,
+            sixteen.ngram_order().as_usize() == 16,
             "ngram order 16 should be accepted",
         )?;
         Ok(())

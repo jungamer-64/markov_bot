@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use rand::{Rng, RngExt};
 
 use super::{
-    DEFAULT_GENERATION_TEMPERATURE,
-    options::EosPolicy,
+    options::{EosPolicy, Temperature},
     token::{Count, EOS_ID, Prefix, TokenId},
 };
 
@@ -18,7 +17,7 @@ struct AliasTable<K> {
 pub(crate) fn choose_weighted_prefix<R: Rng + ?Sized>(
     starts: &HashMap<Prefix, Count>,
     rng: &mut R,
-    temperature: f64,
+    temperature: Temperature,
 ) -> Option<Prefix> {
     let mut entries = starts
         .iter()
@@ -32,7 +31,7 @@ pub(crate) fn choose_weighted_prefix<R: Rng + ?Sized>(
 pub(crate) fn choose_weighted_token<R: Rng + ?Sized>(
     edges: &HashMap<TokenId, Count>,
     rng: &mut R,
-    temperature: f64,
+    temperature: Temperature,
     policy: EosPolicy,
 ) -> Option<TokenId> {
     let mut entries = edges
@@ -53,13 +52,9 @@ pub(crate) fn choose_weighted_token<R: Rng + ?Sized>(
 fn choose_weighted_key<K: Clone, R: Rng + ?Sized>(
     entries: &[(K, Count)],
     rng: &mut R,
-    temperature: f64,
+    temperature: Temperature,
 ) -> Option<K> {
-    if !temperature.is_finite() || temperature <= 0.0 {
-        return None;
-    }
-
-    if (temperature - DEFAULT_GENERATION_TEMPERATURE).abs() <= f64::EPSILON {
+    if (temperature.get() - Temperature::DEFAULT.get()).abs() <= f64::EPSILON {
         return choose_weighted_key_default(entries, rng);
     }
 
@@ -84,7 +79,7 @@ fn choose_weighted_key_default<K: Clone, R: Rng + ?Sized>(
 fn choose_weighted_key_with_temperature<K: Clone, R: Rng + ?Sized>(
     entries: &[(K, Count)],
     rng: &mut R,
-    temperature: f64,
+    temperature: Temperature,
 ) -> Option<K> {
     let weighted_entries = build_temperature_weights(entries, temperature)?;
     let alias_table = AliasTable::build(weighted_entries.as_slice())?;
@@ -93,9 +88,9 @@ fn choose_weighted_key_with_temperature<K: Clone, R: Rng + ?Sized>(
 
 fn build_temperature_weights<K: Clone>(
     entries: &[(K, Count)],
-    temperature: f64,
+    temperature: Temperature,
 ) -> Option<Vec<(K, f64)>> {
-    let exponent = 1.0_f64 / temperature;
+    let exponent = 1.0_f64 / temperature.get();
     let mut weighted_entries = Vec::with_capacity(entries.len());
 
     for (key, count) in entries {

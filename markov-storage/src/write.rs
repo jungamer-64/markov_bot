@@ -5,7 +5,7 @@ use super::{
     align_to_eight, bytes_for_len, checked_add, compute_checksum, model_record_size,
     start_record_size, u32_from_usize, u64_from_usize, validate_special_tokens,
 };
-use crate::markov::{Count, MarkovChain, Prefix, TokenId, validate_ngram_order};
+use crate::markov::{Count, MarkovChain, Prefix, TokenId};
 
 use super::types::{
     EdgeRecord, ModelRecord, ModelSection, SectionDescriptor, SectionKind, StartRecord,
@@ -21,24 +21,23 @@ pub(super) fn compile_chain(
     chain: &MarkovChain,
     min_edge_count: Count,
 ) -> Result<StorageSections, DynError> {
-    validate_ngram_order(chain.ngram_order(), "chain ngram order")?;
     validate_special_tokens(chain.id_to_token())?;
     if min_edge_count.get() == 0 {
         return Err("min_edge_count must be >= 1".into());
     }
 
     let starts = compile_starts(chain)?;
-    let mut models = Vec::with_capacity(chain.ngram_order());
-    for order in (1..=chain.ngram_order()).rev() {
+    let mut models = Vec::with_capacity(chain.order().as_usize());
+    for order_val in (1..=chain.order().as_usize()).rev() {
         let model = chain
             .models()
-            .get(order - 1)
-            .ok_or_else(|| format!("chain model section for order {order} is missing"))?;
-        models.push(compile_model(model, order, min_edge_count)?);
+            .get(order_val - 1)
+            .ok_or_else(|| format!("chain model section for order {order_val} is missing"))?;
+        models.push(compile_model(model, order_val, min_edge_count)?);
     }
 
     Ok(StorageSections {
-        ngram_order: chain.ngram_order(),
+        ngram_order: chain.order(),
         vocab: VocabSections {
             offsets: build_vocab_offsets(chain.id_to_token())?,
             blob: chain.id_to_token().join("").into_bytes(),
@@ -105,7 +104,7 @@ fn calculate_file_size(
     add_section(u64_from_usize(vocab_blob_len, "vocab blob section")?)?;
     add_section(calculate_starts_section_size(
         sections.starts.as_slice(),
-        sections.ngram_order,
+        sections.ngram_order.as_usize(),
     )?)?;
 
     for model in &sections.models {
@@ -205,10 +204,10 @@ fn compile_starts(chain: &MarkovChain) -> Result<Vec<StartRecord>, DynError> {
 
     let mut cumulative = 0_u64;
     for prefix in prefixes {
-        if prefix.len() != chain.ngram_order() {
+        if prefix.len() != chain.order().as_usize() {
             return Err(format!(
                 "start record prefix length mismatch: expected {}, got {}",
-                chain.ngram_order(),
+                chain.order().as_usize(),
                 prefix.len()
             )
             .into());
@@ -246,7 +245,7 @@ fn write_header(
     write_u32(target, flags);
     write_u32(target, super::TOKENIZER_VERSION);
     write_u32(target, super::NORMALIZATION_FLAGS);
-    write_u32(target, u32_from_usize(sections.ngram_order, "ngram order")?);
+    write_u32(target, u32_from_usize(sections.ngram_order.as_usize(), "ngram order")?);
     write_u64(target, section_count);
     write_u64(target, file_size);
     write_u64(target, super::CHECKSUM_PLACEHOLDER);
@@ -292,7 +291,7 @@ fn write_descriptors(
     add_descriptor(
         SectionKind::Starts,
         0,
-        calculate_starts_section_size(sections.starts.as_slice(), sections.ngram_order)?,
+        calculate_starts_section_size(sections.starts.as_slice(), sections.ngram_order.as_usize())?,
     )?;
 
     for model in &sections.models {
@@ -325,7 +324,7 @@ fn write_sections(
     write_starts_section(
         target,
         sections.starts.as_slice(),
-        sections.ngram_order,
+        sections.ngram_order.as_usize(),
         descriptors.get(2).ok_or("missing starts descriptor")?,
     )?;
 

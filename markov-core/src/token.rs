@@ -35,14 +35,6 @@ impl TokenId {
     }
 }
 
-impl From<TokenId> for usize {
-    fn from(value: TokenId) -> Self {
-        // SAFETY: u32 is always representable as usize on 32/64-bit systems.
-        // On 16-bit systems this would fail, but we don't support them.
-        Self::try_from(value.0).unwrap_or(0)
-    }
-}
-
 impl fmt::Display for TokenId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
@@ -90,7 +82,7 @@ impl fmt::Display for Count {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Prefix(pub(crate) Vec<TokenId>);
+pub struct Prefix(Vec<TokenId>);
 
 impl From<Vec<TokenId>> for Prefix {
     fn from(value: Vec<TokenId>) -> Self {
@@ -100,17 +92,17 @@ impl From<Vec<TokenId>> for Prefix {
 
 impl Prefix {
     #[must_use]
-    pub const fn new(tokens: Vec<TokenId>) -> Self {
+    pub fn new(tokens: Vec<TokenId>) -> Self {
         Self(tokens)
     }
 
     #[must_use]
-    pub const fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.0.len()
     }
 
     #[must_use]
-    pub const fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
@@ -130,5 +122,10 @@ impl Prefix {
     #[must_use]
     pub fn last_mut(&mut self) -> Option<&mut TokenId> {
         self.0.last_mut()
+    }
+
+    #[must_use]
+    pub fn get(&self, range: std::ops::Range<usize>) -> Option<&[TokenId]> {
+        self.0.get(range)
     }
 }

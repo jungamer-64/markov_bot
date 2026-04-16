@@ -1,6 +1,6 @@
 use std::fs;
 
-use markov_core::MarkovChain;
+use markov_core::{MarkovChain, NgramOrder};
 use tempfile::{Builder, TempPath};
 
 use crate::{
@@ -79,13 +79,13 @@ pub(super) fn write_sample_file_with_settings(
 
 pub(super) fn load_sample_file(
     path: &TempPath,
-    expected_ngram_order: usize,
+    expected_ngram_order: NgramOrder,
 ) -> Result<MarkovChain, StorageError> {
     let bytes = fs::read(path)?;
     decode_chain(bytes.as_slice(), expected_ngram_order)
 }
 
-pub(super) fn sample_chain_with_order(ngram_order: usize) -> Result<MarkovChain, StorageError> {
+pub(super) fn sample_chain_with_order(ngram_order: NgramOrder) -> Result<MarkovChain, StorageError> {
     let mut chain = MarkovChain::new(ngram_order)?;
     for tokens in [
         vec!["a", "b", "c", "d"],
@@ -101,7 +101,7 @@ pub(super) fn sample_chain_with_order(ngram_order: usize) -> Result<MarkovChain,
         )?;
     }
     ensure(
-        chain.models().len() == ngram_order,
+        chain.models().len() == ngram_order.as_usize(),
         "model count should match ngram order",
     )?;
     Ok(chain)

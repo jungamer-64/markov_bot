@@ -3,14 +3,14 @@ use std::collections::HashMap;
 use rand::Rng;
 
 use crate::{
-    BOS_ID, BOS_TOKEN, Count, EOS_ID, EOS_TOKEN, MarkovError, Prefix, TokenId,
-    options::{EosPolicy, GenerationOptions},
-    sampling, validate_ngram_order,
+    BOS_ID, BOS_TOKEN, Count, EOS_ID, EOS_TOKEN, MarkovError, NgramOrder, Prefix, TokenId,
+    options::{EosPolicy, GenerationOptions, Temperature},
+    sampling,
 };
 
 #[derive(Debug, Clone)]
 pub struct MarkovChain {
-    ngram_order: usize,
+    order: NgramOrder,
     token_to_id: HashMap<String, TokenId>,
     id_to_token: Vec<String>,
     models: Vec<HashMap<Prefix, HashMap<TokenId, Count>>>,
@@ -19,38 +19,35 @@ pub struct MarkovChain {
 
 impl MarkovChain {
     /// # Errors
-    /// Returns `MarkovError::Invalid` if `ngram_order` is 0 or greater than `u32::MAX`.
-    pub fn new(ngram_order: usize) -> Result<Self, MarkovError> {
-        validate_ngram_order(ngram_order, "ngram_order")?;
-
+    /// Returns `MarkovError::InvalidNgramOrder` if `order` is 0.
+    pub fn new(order: NgramOrder) -> Result<Self, MarkovError> {
         let mut token_to_id = HashMap::new();
         token_to_id.insert(BOS_TOKEN.to_owned(), BOS_ID);
         token_to_id.insert(EOS_TOKEN.to_owned(), EOS_ID);
 
         let mut id_to_token = vec![String::new(); 2];
-        BOS_TOKEN.clone_into(
-            id_to_token
-                .get_mut(usize::from(BOS_ID))
-                .ok_or_else(|| MarkovError::Invalid("BOS_ID is out of bounds".into()))?,
-        );
-        EOS_TOKEN.clone_into(
-            id_to_token
-                .get_mut(usize::from(EOS_ID))
-                .ok_or_else(|| MarkovError::Invalid("EOS_ID is out of bounds".into()))?,
-        );
+        let bos_slot = id_to_token
+            .get_mut(BOS_ID.get() as usize)
+            .ok_or_else(|| MarkovError::Boundary("BOS_ID is out of bounds".into()))?;
+        *bos_slot = BOS_TOKEN.to_owned();
+
+        let eos_slot = id_to_token
+            .get_mut(EOS_ID.get() as usize)
+            .ok_or_else(|| MarkovError::Boundary("EOS_ID is out of bounds".into()))?;
+        *eos_slot = EOS_TOKEN.to_owned();
 
         Ok(Self {
-            ngram_order,
+            order,
             token_to_id,
             id_to_token,
-            models: vec![HashMap::new(); ngram_order],
+            models: vec![HashMap::new(); order.as_usize()],
             starts: HashMap::new(),
         })
     }
 
     #[must_use]
-    pub const fn ngram_order(&self) -> usize {
-        self.ngram_order
+    pub const fn order(&self) -> NgramOrder {
+        self.order
     }
 
     #[must_use]
@@ -74,26 +71,24 @@ impl MarkovChain {
     }
 
     /// # Errors
-    /// Returns `MarkovError::Invalid` if the parts are invalid.
+    /// Returns `MarkovError::Boundary` if the parts are inconsistent.
     pub fn from_parts(
-        ngram_order: usize,
+        order: NgramOrder,
         token_to_id: HashMap<String, TokenId>,
         id_to_token: Vec<String>,
         models: Vec<HashMap<Prefix, HashMap<TokenId, Count>>>,
         starts: HashMap<Prefix, Count>,
     ) -> Result<Self, MarkovError> {
-        validate_ngram_order(ngram_order, "ngram_order")?;
-
-        if models.len() != ngram_order {
-            return Err(MarkovError::Invalid(format!(
+        if models.len() != order.as_usize() {
+            return Err(MarkovError::Boundary(format!(
                 "models count ({}) must match ngram_order ({})",
                 models.len(),
-                ngram_order
+                order.as_usize()
             )));
         }
 
         Ok(Self {
-            ngram_order,
+            order,
             token_to_id,
             id_to_token,
             models,
@@ -102,46 +97,45 @@ impl MarkovChain {
     }
 
     /// # Errors
-    /// Returns `MarkovError::Invalid` if training fails.
+    /// Returns `MarkovError::Boundary` if training fails due to internal inconsistency.
     pub fn train_tokens(&mut self, tokens: &[String]) -> Result<(), MarkovError> {
         if tokens.is_empty() {
-            return Ok(());
+            return Ok(())
         }
 
-        let mut ids = Vec::with_capacity(tokens.len() + self.ngram_order + 1);
-        ids.extend(std::iter::repeat_n(BOS_ID, self.ngram_order));
+        let mut ids = Vec::with_capacity(tokens.len() + self.order.as_usize() + 1);
+        for _ in 0..self.order.as_usize() {
+            ids.push(BOS_ID);
+        }
         for token in tokens {
             ids.push(self.get_or_insert_token(token));
         }
         ids.push(EOS_ID);
 
         // Update starts
-        let start_prefix = Prefix(
-            ids.get(0..self.ngram_order)
-                .ok_or_else(|| MarkovError::Invalid("failed to get start prefix".into()))?
-                .to_vec(),
-        );
+        let start_range = ids.get(0..self.order.as_usize()).ok_or_else(|| {
+            MarkovError::Boundary("failed to get start prefix range".into())
+        })?;
+        let start_prefix = Prefix::new(start_range.to_vec());
         let start_count = self.starts.entry(start_prefix).or_insert(Count::ZERO);
         *start_count = start_count.saturating_add(1);
 
         // Update models
-        for window in ids.windows(self.ngram_order + 1) {
-            let next = *window
-                .last()
-                .ok_or_else(|| MarkovError::Invalid("training window is unexpectedly empty".into()))?;
+        for window in ids.windows(self.order.as_usize() + 1) {
+            let next = *window.last().ok_or_else(|| {
+                MarkovError::Boundary("training window is unexpectedly empty".into())
+            })?;
 
-            for order in 1..=self.ngram_order {
-                let prefix_start = self.ngram_order - order;
-                let prefix = window
-                    .get(prefix_start..self.ngram_order)
-                    .ok_or_else(|| {
-                        MarkovError::Invalid("training prefix range is invalid".into())
-                    })?
-                    .to_vec();
-                let model = self.models.get_mut(order - 1).ok_or_else(|| {
-                    MarkovError::Invalid("training model index is out of bounds".into())
+            for order_val in 1..=self.order.as_usize() {
+                let prefix_start = self.order.as_usize() - order_val;
+                let prefix_range = window.get(prefix_start..self.order.as_usize()).ok_or_else(|| {
+                    MarkovError::Boundary("training prefix range is invalid".into())
                 })?;
-                increment_nested_count(model, Prefix(prefix), next);
+                let prefix = Prefix::new(prefix_range.to_vec());
+                let model = self.models.get_mut(order_val - 1).ok_or_else(|| {
+                    MarkovError::Boundary("training model index is out of bounds".into())
+                })?;
+                increment_nested_count(model, prefix, next);
             }
         }
 
@@ -153,7 +147,7 @@ impl MarkovChain {
         rng: &mut R,
         options: GenerationOptions,
     ) -> Option<String> {
-        if !self.can_generate(options) {
+        if self.starts.is_empty() {
             return None;
         }
 
@@ -162,19 +156,12 @@ impl MarkovChain {
 
         self.seed_generated_tokens_from_context(
             context.as_slice(),
-            options.max_words(),
+            options.max_words().get(),
             &mut generated,
         )?;
         self.collect_generated_tokens(rng, options, &mut context, &mut generated)?;
 
         (!generated.is_empty()).then_some(generated.join(""))
-    }
-
-    fn can_generate(&self, options: GenerationOptions) -> bool {
-        !self.starts.is_empty()
-            && self.models.len() == self.ngram_order
-            && self.ngram_order > 0
-            && options.max_words() > 0
     }
 
     fn collect_generated_tokens<R: Rng + ?Sized>(
@@ -184,8 +171,8 @@ impl MarkovChain {
         context: &mut Prefix,
         generated: &mut Vec<String>,
     ) -> Option<()> {
-        while generated.len() < options.max_words() {
-            let policy = if generated.len() >= options.min_words_before_eos() {
+        while generated.len() < options.max_words().get() {
+            let policy = if generated.len() >= options.min_words_before_eos().get() {
                 EosPolicy::Allowed
             } else {
                 EosPolicy::Forbidden
@@ -223,13 +210,13 @@ impl MarkovChain {
     }
 
     fn push_generated_token(&self, generated: &mut Vec<String>, id: TokenId) -> Option<()> {
-        let token = self.id_to_token.get(usize::from(id))?;
+        let token = self.id_to_token.get(id.get() as usize)?;
         generated.push(token.clone());
         Some(())
     }
 
     fn advance_context(context: &mut Prefix, next: TokenId) -> Option<()> {
-        if context.0.is_empty() {
+        if context.is_empty() {
             return None;
         }
         context.rotate_left(1);
@@ -243,7 +230,7 @@ impl MarkovChain {
         &self,
         rng: &mut R,
         context: &[TokenId],
-        temperature: f64,
+        temperature: Temperature,
         policy: EosPolicy,
     ) -> Option<TokenId> {
         if let Some(next) = self.choose_with_backoff(context, rng, temperature, policy) {
@@ -261,14 +248,15 @@ impl MarkovChain {
         &self,
         context: &[TokenId],
         rng: &mut R,
-        temperature: f64,
+        temperature: Temperature,
         policy: EosPolicy,
     ) -> Option<TokenId> {
-        for order in (1..=self.ngram_order).rev() {
-            let prefix_start = context.len().checked_sub(order)?;
-            let prefix = context.get(prefix_start..)?;
-            let model = self.models.get(order - 1)?;
-            if let Some(edges) = model.get(&Prefix(prefix.to_vec()))
+        for order_val in (1..=self.order.as_usize()).rev() {
+            let prefix_start = context.len().checked_sub(order_val)?;
+            let prefix_slice = context.get(prefix_start..)?;
+            let prefix = Prefix::new(prefix_slice.to_vec());
+            let model = self.models.get(order_val - 1)?;
+            if let Some(edges) = model.get(&prefix)
                 && let Some(next) = sampling::choose_weighted_token(edges, rng, temperature, policy)
             {
                 return Some(next);
@@ -281,7 +269,7 @@ impl MarkovChain {
     fn choose_global_non_eos<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
-        temperature: f64,
+        temperature: Temperature,
     ) -> Option<TokenId> {
         let mut totals = HashMap::<TokenId, Count>::new();
 
@@ -304,7 +292,7 @@ impl MarkovChain {
             return *id;
         }
 
-        let id = TokenId::new(u32::try_from(self.id_to_token.len()).unwrap_or(0));
+        let id = TokenId::new(self.id_to_token.len() as u32);
         self.token_to_id.insert(token.to_owned(), id);
         self.id_to_token.push(token.to_owned());
         id
@@ -326,18 +314,20 @@ mod tests {
     use super::*;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use crate::{MaxWords, MinWordsBeforeEos, Temperature};
     use crate::test_support::{ensure, ensure_eq};
 
     #[test]
     fn new_chain_has_correct_ngram_order() -> Result<(), MarkovError> {
-        let chain = MarkovChain::new(3)?;
-        ensure_eq(&chain.ngram_order(), &3, "ngram order should be 3")?;
+        let order = NgramOrder::new(3)?;
+        let chain = MarkovChain::new(order)?;
+        ensure_eq(&chain.order(), &order, "ngram order should be 3")?;
         Ok(())
     }
 
     #[test]
     fn training_increases_token_count() -> Result<(), MarkovError> {
-        let mut chain = MarkovChain::new(3)?;
+        let mut chain = MarkovChain::new(NgramOrder::new(3)?)?;
         chain.train_tokens(&["a".to_owned(), "b".to_owned(), "c".to_owned()])?;
         ensure(chain.id_to_token().len() > 2, "token count should increase")?;
         Ok(())
@@ -345,17 +335,21 @@ mod tests {
 
     #[test]
     fn generation_reproduces_trained_sequence_with_low_temp() -> Result<(), MarkovError> {
-        let mut chain = MarkovChain::new(2)?;
+        let mut chain = MarkovChain::new(NgramOrder::new(2)?)?;
         let tokens = vec!["apple".to_owned(), "banana".to_owned(), "cherry".to_owned()];
         chain.train_tokens(&tokens)?;
 
         let mut rng = StdRng::seed_from_u64(42);
-        let options = GenerationOptions::new(10, 0.01, 0)?;
+        let options = GenerationOptions::new(
+            MaxWords::new(10)?,
+            Temperature::new(0.01)?,
+            MinWordsBeforeEos::new(0),
+        )?;
         let sentence = chain.generate_sentence_with_options(&mut rng, options);
 
         ensure(sentence.is_some(), "should generate a sentence")?;
         ensure_eq(
-            &sentence.ok_or_else(|| MarkovError::Invalid("sentence should be some".into()))?,
+            &sentence.ok_or_else(|| MarkovError::Boundary("sentence should be some".into()))?,
             &"applebananacherry".to_owned(),
             "should reproduce exactly at very low temperature",
         )?;
@@ -364,9 +358,7 @@ mod tests {
 
     #[test]
     fn temperature_affects_sampling_probabilities() -> Result<(), MarkovError> {
-        let mut chain = MarkovChain::new(1)?;
-        // Create a fork at BOS: BOS -> "c" or BOS -> "b"
-        // "c" is much more frequent
+        let mut chain = MarkovChain::new(NgramOrder::new(1)?)?;
         chain.train_tokens(&["c".to_owned()])?;
         for _ in 0..10 {
             chain.train_tokens(&["c".to_owned()])?;
@@ -375,14 +367,12 @@ mod tests {
 
         let mut low_rng = StdRng::seed_from_u64(11);
         let mut high_rng = StdRng::seed_from_u64(11);
-        let low_temp = 0.1;
-        let high_temp = 2.2;
+        let low_temp = Temperature::new(0.1)?;
+        let high_temp = Temperature::new(2.2)?;
         let sample_count = 200;
 
         let low_b = sample_b_frequency(&chain, &mut low_rng, sample_count, low_temp)?;
         let high_b = sample_b_frequency(&chain, &mut high_rng, sample_count, high_temp)?;
-
-        println!("low_b: {low_b}, high_b: {high_b}");
 
         ensure(
             high_b > low_b,
@@ -395,12 +385,16 @@ mod tests {
         chain: &MarkovChain,
         rng: &mut StdRng,
         sample_count: usize,
-        temperature: f64,
+        temperature: Temperature,
     ) -> Result<usize, MarkovError> {
         let mut hits = 0_usize;
 
         for _ in 0..sample_count {
-            let options = GenerationOptions::new(1, temperature, 0)?;
+            let options = GenerationOptions::new(
+                MaxWords::new(1)?,
+                temperature,
+                MinWordsBeforeEos::new(0),
+            )?;
             let sentence = chain.generate_sentence_with_options(rng, options);
             if sentence.as_deref() == Some("b") {
                 hits += 1;

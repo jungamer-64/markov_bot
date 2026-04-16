@@ -11,7 +11,7 @@ use super::{
     model_record_size, start_record_size, u64_from_usize, usize_from_u32, usize_from_u64,
     validate_special_tokens, validate_token_id, vocab_blob_compression_flags,
 };
-use crate::markov::{Count, MarkovChain, Prefix, TokenId, validate_ngram_order};
+use crate::markov::{Count, MarkovChain, NgramOrder, Prefix, TokenId};
 
 use super::types::{
     EdgeRecord, Header, ModelRecord, ModelSection, SectionDescriptor, SectionEntry, SectionKind,
@@ -27,14 +27,11 @@ const MAX_RLE_EXPANSION_PER_ENCODED_BYTE: usize = REPEAT_CHUNK_MAX / 2;
 
 pub(super) fn decode_chain(
     bytes: &[u8],
-    expected_ngram_order: usize,
+    expected_ngram_order: NgramOrder,
 ) -> Result<MarkovChain, DynError> {
-    validate_ngram_order(expected_ngram_order, "expected_ngram_order")?;
-
     let header = validate_header(bytes)?;
-    let actual_ngram_order = usize::try_from(header.ngram_order)
-        .map_err(|_error| StorageError::Format("header ngram_order exceeds usize range".into()))?;
-    validate_ngram_order(actual_ngram_order, "header ngram_order")?;
+    let actual_ngram_order = NgramOrder::new(usize::try_from(header.ngram_order)
+        .map_err(|_error| StorageError::Format("header ngram_order exceeds usize range".into()))?)?;
     if actual_ngram_order != expected_ngram_order {
         return Err(StorageError::NgramOrderMismatch {
             expected: expected_ngram_order,
@@ -42,7 +39,7 @@ pub(super) fn decode_chain(
         });
     }
 
-    let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order)?;
+    let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order.as_usize())?;
     if header.section_count != expected_section_count {
         return Err(StorageError::Format(format!(
             "section count mismatch: expected {expected_section_count}, got {}",
@@ -68,17 +65,17 @@ pub(super) fn decode_chain(
 
     let table = build_section_table(bytes, &header)?;
     let sections = parse_storage(bytes, &header, &table, actual_ngram_order)?;
+
 
     rebuild_chain(&sections)
 }
 
 pub(super) fn decode_snapshot(bytes: &[u8]) -> Result<super::StorageSnapshot, DynError> {
     let header = validate_header(bytes)?;
-    let actual_ngram_order = usize::try_from(header.ngram_order)
-        .map_err(|_error| StorageError::Format("header ngram_order exceeds usize range".into()))?;
-    validate_ngram_order(actual_ngram_order, "header ngram_order")?;
+    let actual_ngram_order = NgramOrder::new(usize::try_from(header.ngram_order)
+        .map_err(|_error| StorageError::Format("header ngram_order exceeds usize range".into()))?)?;
 
-    let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order)?;
+    let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order.as_usize())?;
     if header.section_count != expected_section_count {
         return Err(StorageError::Format(format!(
             "section count mismatch: expected {expected_section_count}, got {}",
@@ -104,6 +101,7 @@ pub(super) fn decode_snapshot(bytes: &[u8]) -> Result<super::StorageSnapshot, Dy
 
     let table = build_section_table(bytes, &header)?;
     let sections = parse_storage(bytes, &header, &table, actual_ngram_order)?;
+
     let chain = rebuild_chain(&sections)?;
     let compression_mode = compression_mode_from_flags(header.flags)?;
 
@@ -293,7 +291,7 @@ fn parse_storage(
     bytes: &[u8],
     header: &Header,
     table: &SectionTable,
-    ngram_order: usize,
+    ngram_order: NgramOrder,
 ) -> Result<StorageSections, DynError> {
     let vocab_offsets_entry = table.unique_entry(SectionKind::VocabOffsets)?;
     let vocab_offsets = parse_u64_section(section_bytes(bytes, vocab_offsets_entry)?)?;
@@ -312,9 +310,9 @@ fn parse_storage(
     )?;
 
     let starts_entry = table.unique_entry(SectionKind::Starts)?;
-    let starts = parse_starts_section(section_bytes(bytes, starts_entry)?, ngram_order)?;
+    let starts = parse_starts_section(section_bytes(bytes, starts_entry)?, ngram_order.as_usize())?;
 
-    let mut models = Vec::with_capacity(ngram_order);
+    let mut models = Vec::with_capacity(ngram_order.as_usize());
     for entry in table.model_entries() {
         let order = usize_from_u32(entry.descriptor.flags, "model section order")?;
         models.push(parse_model_section(section_bytes(bytes, entry)?, order)?);
@@ -445,7 +443,7 @@ fn read_prefix(bytes: &[u8], cursor: &mut usize, order: usize) -> Result<Prefix,
 }
 
 fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
-    if sections.models.len() != sections.ngram_order {
+    if sections.models.len() != sections.ngram_order.as_usize() {
         return Err("storage model section count does not match ngram order".into());
     }
 
@@ -469,12 +467,12 @@ fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
 
     let starts = decode_starts(
         sections.starts.as_slice(),
-        sections.ngram_order,
+        sections.ngram_order.as_usize(),
         token_count,
     )?;
     let models = decode_models(
         sections.models.as_slice(),
-        sections.ngram_order,
+        sections.ngram_order.as_usize(),
         token_count,
     )?;
 

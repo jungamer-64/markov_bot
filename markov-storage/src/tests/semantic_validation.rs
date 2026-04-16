@@ -1,5 +1,7 @@
 use std::fs;
 
+use markov_core::NgramOrder;
+
 use super::helpers::{
     descriptor, descriptor_size_offset, ensure, load_sample_file, model_descriptor_index,
     rewrite_checksum, sample_chain_with_order, section_body_offset, write_sample_file,
@@ -8,10 +10,12 @@ use super::helpers::{
 
 #[test]
 fn rejects_saved_ngram_order_mismatch() -> Result<(), crate::StorageError> {
-    let chain = sample_chain_with_order(7)?;
+    let order7 = NgramOrder::new(7)?;
+    let order6 = NgramOrder::new(6)?;
+    let chain = sample_chain_with_order(order7)?;
     let path = write_sample_file("saved_order_mismatch", &chain)?;
 
-    let result = load_sample_file(&path, 6);
+    let result = load_sample_file(&path, order6);
     ensure(
         result.is_err(),
         "saved ngram order mismatch should be rejected",
@@ -20,7 +24,8 @@ fn rejects_saved_ngram_order_mismatch() -> Result<(), crate::StorageError> {
 
 #[test]
 fn rejects_model_section_size_mismatch() -> Result<(), crate::StorageError> {
-    let chain = sample_chain_with_order(7)?;
+    let order = NgramOrder::new(7)?;
+    let chain = sample_chain_with_order(order)?;
     let path = write_sample_file("model_size_mismatch", &chain)?;
     let mut bytes = fs::read(&path)?;
 
@@ -31,7 +36,7 @@ fn rejects_model_section_size_mismatch() -> Result<(), crate::StorageError> {
     rewrite_checksum(bytes.as_mut_slice())?;
     fs::write(&path, bytes)?;
 
-    let result = load_sample_file(&path, 7);
+    let result = load_sample_file(&path, order);
     ensure(
         result.is_err(),
         "model section size mismatch should be rejected",
@@ -40,7 +45,8 @@ fn rejects_model_section_size_mismatch() -> Result<(), crate::StorageError> {
 
 #[test]
 fn rejects_invalid_model_edge_range() -> Result<(), crate::StorageError> {
-    let chain = sample_chain_with_order(7)?;
+    let order = NgramOrder::new(7)?;
+    let chain = sample_chain_with_order(order)?;
     let path = write_sample_file("invalid_edge_range", &chain)?;
     let mut bytes = fs::read(&path)?;
 
@@ -53,7 +59,7 @@ fn rejects_invalid_model_edge_range() -> Result<(), crate::StorageError> {
     rewrite_checksum(bytes.as_mut_slice())?;
     fs::write(&path, bytes)?;
 
-    let result = load_sample_file(&path, 7);
+    let result = load_sample_file(&path, order);
     ensure(
         result.is_err(),
         "invalid model edge range should be rejected",

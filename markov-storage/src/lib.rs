@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use markov_core::{BOS_TOKEN, Count, EOS_TOKEN, MarkovChain, validate_ngram_order};
+use markov_core::{BOS_TOKEN, Count, EOS_TOKEN, MarkovChain, NgramOrder};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -62,8 +62,8 @@ pub enum StorageError {
     Magic { expected: [u8; 8], actual: [u8; 8] },
     #[error("unsupported version: {0}")]
     Version(u32),
-    #[error("ngram order mismatch: expected {expected}, got {actual}")]
-    NgramOrderMismatch { expected: usize, actual: usize },
+    #[error("ngram order mismatch: expected {expected:?}, got {actual:?}")]
+    NgramOrderMismatch { expected: NgramOrder, actual: NgramOrder },
 }
 
 impl From<&str> for StorageError {
@@ -92,7 +92,7 @@ impl StorageCompressionMode {
     /// Parses a storage compression mode from a string.
     ///
     /// # Errors
-    /// Returns `StorageError::Invalid` if the input string is not a supported compression mode.
+    /// Returns `StorageError::Format` if the input string is not a supported compression mode.
     pub fn parse(raw: &str) -> Result<Self, DynError> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
@@ -176,7 +176,7 @@ impl StorageSnapshot {
 ///
 /// # Errors
 /// Returns `StorageError` if decoding fails.
-pub fn decode_chain(bytes: &[u8], expected_ngram_order: usize) -> Result<MarkovChain, DynError> {
+pub fn decode_chain(bytes: &[u8], expected_ngram_order: NgramOrder) -> Result<MarkovChain, DynError> {
     read::decode_chain(bytes, expected_ngram_order)
 }
 
@@ -191,7 +191,7 @@ pub fn encode_chain(
 ) -> Result<Vec<u8>, DynError> {
     let sections = write::compile_chain(chain, min_edge_count)?;
     let payload = write::encode_storage(&sections, compression_mode)?;
-    read::decode_chain(payload.as_slice(), chain.ngram_order())?;
+    read::decode_chain(payload.as_slice(), chain.order())?;
     Ok(payload)
 }
 
@@ -222,6 +222,7 @@ pub fn encode_snapshot(
 pub fn snapshot_to_chain(snapshot: &StorageSnapshot) -> Result<MarkovChain, DynError> {
     validate_snapshot(snapshot)?;
 
+    let order = NgramOrder::new(snapshot.ngram_order())?;
     let token_to_id = build_token_index(snapshot.tokens.as_slice())?;
     let mut models = (0..snapshot.ngram_order())
         .map(|_| HashMap::new())
@@ -248,7 +249,7 @@ pub fn snapshot_to_chain(snapshot: &StorageSnapshot) -> Result<MarkovChain, DynE
         .collect::<HashMap<_, _>>();
 
     Ok(MarkovChain::from_parts(
-        snapshot.ngram_order(),
+        order,
         token_to_id,
         snapshot.tokens.clone(),
         models,
@@ -264,12 +265,10 @@ pub fn chain_to_snapshot(
     chain: &MarkovChain,
     compression_mode: StorageCompressionMode,
 ) -> Result<StorageSnapshot, DynError> {
-    validate_ngram_order(chain.ngram_order(), "chain ngram order")
-        .map_err(|error| error.to_string())?;
     validate_special_tokens(chain.id_to_token())?;
     validate_token_index(chain)?;
 
-    if chain.models().len() != chain.ngram_order() {
+    if chain.models().len() != chain.order().as_usize() {
         return Err("model count does not match ngram order".into());
     }
 
@@ -311,7 +310,7 @@ pub fn chain_to_snapshot(
         schema_version: SNAPSHOT_SCHEMA_VERSION,
         source: SnapshotSource {
             storage_version: VERSION,
-            ngram_order: chain.ngram_order(),
+            ngram_order: chain.order().as_usize(),
             compression: compression_mode,
         },
         tokens: chain.id_to_token().to_vec(),
@@ -330,7 +329,7 @@ fn validate_snapshot(snapshot: &StorageSnapshot) -> Result<(), DynError> {
         )));
     }
 
-    validate_ngram_order(snapshot.source.ngram_order, "snapshot ngram order")?;
+    NgramOrder::new(snapshot.source.ngram_order)?;
     validate_special_tokens(snapshot.tokens.as_slice())?;
     let token_to_id = build_token_index(snapshot.tokens.as_slice())?;
     let token_count = u32_from_usize(snapshot.tokens.len(), "snapshot token count")?;
