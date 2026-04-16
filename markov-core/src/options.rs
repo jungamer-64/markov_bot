@@ -6,16 +6,6 @@ pub enum EosPolicy {
     Allowed,
 }
 
-impl From<bool> for EosPolicy {
-    fn from(value: bool) -> Self {
-        if value {
-            Self::Allowed
-        } else {
-            Self::Forbidden
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Temperature(f64);
 

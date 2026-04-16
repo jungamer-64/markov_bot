@@ -48,17 +48,17 @@ impl MarkovChain {
 
         let mut id_to_token = vec![String::new(); 2];
         let bos_idx = usize::try_from(BOS_ID.get())
-            .map_err(|_| MarkovError::Boundary("BOS_ID conversion failed".into()))?;
+            .map_err(|err| MarkovError::Boundary(format!("BOS_ID conversion failed: {err}")))?;
         let bos_slot = id_to_token
             .get_mut(bos_idx)
-            .ok_or(MarkovError::Boundary("BOS_ID is out of bounds".into()))?;
+            .ok_or_else(|| MarkovError::Boundary("BOS_ID is out of bounds".into()))?;
         BOS_TOKEN.clone_into(bos_slot);
 
         let eos_idx = usize::try_from(EOS_ID.get())
-            .map_err(|_| MarkovError::Boundary("EOS_ID conversion failed".into()))?;
+            .map_err(|err| MarkovError::Boundary(format!("EOS_ID conversion failed: {err}")))?;
         let eos_slot = id_to_token
             .get_mut(eos_idx)
-            .ok_or(MarkovError::Boundary("EOS_ID is out of bounds".into()))?;
+            .ok_or_else(|| MarkovError::Boundary("EOS_ID is out of bounds".into()))?;
         EOS_TOKEN.clone_into(eos_slot);
 
         Ok(Self {
@@ -311,7 +311,7 @@ impl MarkovChain {
         }
 
         let id_val = u32::try_from(self.id_to_token.len())
-            .map_err(|_| MarkovError::TokenLimitExceeded)?;
+            .map_err(|_err| MarkovError::TokenLimitExceeded)?;
         let id = TokenId::new(id_val);
         self.token_to_id.insert(token.to_owned(), id);
         self.id_to_token.push(token.to_owned());
@@ -369,7 +369,7 @@ mod tests {
 
         ensure(sentence.is_some(), "should generate a sentence")?;
         ensure_eq(
-            &sentence.ok_or(MarkovError::Boundary("sentence should be some".into()))?,
+            &sentence.ok_or_else(|| MarkovError::Boundary("sentence should be some".into()))?,
             &"applebananacherry".to_owned(),
             "should reproduce exactly at very low temperature",
         )?;

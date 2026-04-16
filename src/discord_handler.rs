@@ -6,6 +6,7 @@ use std::{
 use markov_core::{GenerationOptions, MarkovChain, NgramOrder};
 use markov_storage::{StorageCompressionMode, decode_chain, encode_chain};
 use rand::rng;
+use thiserror::Error;
 use tokio::fs;
 use tokio::sync::{mpsc, oneshot};
 use twilight_http::Client as HttpClient;
@@ -15,9 +16,33 @@ use twilight_model::id::{
 };
 
 use crate::{
-    config::{BotConfig, DynError},
-    tokenizer::Tokenizer,
+    config::BotConfig,
+    tokenizer::{Tokenizer, TokenizerError},
 };
+
+#[derive(Debug, Error)]
+pub(crate) enum HandlerError {
+    #[error("Storage error: {0}")]
+    Storage(#[from] markov_storage::StorageError),
+
+    #[error("Core error: {0}")]
+    Core(#[from] markov_core::MarkovError),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("Discord API error: {0}")]
+    Discord(#[from] twilight_http::Error),
+
+    #[error("Tokenizer error: {0}")]
+    Tokenizer(#[from] TokenizerError),
+
+    #[error("Actor error: {0}")]
+    Actor(String),
+
+    #[error("Invalid generation options: {0}")]
+    InvalidOptions(String),
+}
 
 const GENERATION_FALLBACK: &str = "まだ学習中です。もう少し話しかけてください。";
 
@@ -36,7 +61,7 @@ enum HandlerCommand {
         author_id: Id<UserMarker>,
         author_is_bot: bool,
         tokens: Vec<String>,
-        reply_tx: oneshot::Sender<Result<Option<String>, DynError>>,
+        reply_tx: oneshot::Sender<Result<Option<String>, HandlerError>>,
     },
 }
 
@@ -50,7 +75,7 @@ impl DiscordHandler {
     pub(crate) async fn new(
         config: BotConfig,
         current_user_id: Id<UserMarker>,
-    ) -> Result<Self, DynError> {
+    ) -> Result<Self, HandlerError> {
         let chain = load_chain(config.data_path(), config.ngram_order()).await?;
         let (tx, rx) = mpsc::channel(100);
 
@@ -88,7 +113,7 @@ impl DiscordHandler {
         author_id: Id<UserMarker>,
         author_is_bot: bool,
         content: &str,
-    ) -> Result<(), DynError> {
+    ) -> Result<(), HandlerError> {
         let tokens = self.tokenizer.tokenize(content);
         let (reply_tx, reply_rx) = oneshot::channel();
 
@@ -98,9 +123,9 @@ impl DiscordHandler {
             author_is_bot,
             tokens,
             reply_tx,
-        }).await.map_err(|_error| anyhow::anyhow!("handler actor is dead"))?;
+        }).await.map_err(|_error| HandlerError::Actor("handler actor is dead".to_owned()))?;
 
-        let reply_text: Option<String> = reply_rx.await.map_err(|_error| anyhow::anyhow!("reply channel closed"))??;
+        let reply_text: Option<String> = reply_rx.await.map_err(|_error| HandlerError::Actor("reply channel closed".to_owned()))??;
 
         if let Some(text) = reply_text {
             let _ = http.create_message(channel_id).content(&text).await?;
@@ -158,7 +183,7 @@ impl HandlerActor {
         author_id: Id<UserMarker>,
         author_is_bot: bool,
         tokens: Vec<String>,
-    ) -> Result<Option<String>, DynError> {
+    ) -> Result<Option<String>, HandlerError> {
         if !self.should_process(channel_id, author_id, author_is_bot) {
             return Ok(None);
         }
@@ -199,13 +224,13 @@ impl HandlerActor {
             && !should_ignore_author(author_is_bot, author_id, self.current_user_id)
     }
 
-    fn build_reply_text(&self) -> Result<String, DynError> {
+    fn build_reply_text(&self) -> Result<String, HandlerError> {
         let mut rng = rng();
         let options = GenerationOptions::new(
             self.config.max_words(),
             self.config.temperature(),
             self.config.min_words_before_eos(),
-        ).map_err(|e| anyhow::anyhow!("invalid generation options: {e}"))?;
+        ).map_err(|e| HandlerError::InvalidOptions(e.to_string()))?;
 
         Ok(self.state
             .chain
@@ -226,7 +251,7 @@ fn can_reply(last_reply_at: Option<Instant>, cooldown: Duration) -> bool {
     last_reply_at.is_none_or(|last| last.elapsed() >= cooldown)
 }
 
-async fn load_chain(path: &Path, expected_ngram_order: NgramOrder) -> Result<MarkovChain, DynError> {
+async fn load_chain(path: &Path, expected_ngram_order: NgramOrder) -> Result<MarkovChain, HandlerError> {
     if !path.exists() {
         return MarkovChain::new(expected_ngram_order).map_err(Into::into);
     }
@@ -240,7 +265,7 @@ async fn save_chain(
     chain: &MarkovChain,
     min_edge_count: u64,
     compression_mode: StorageCompressionMode,
-) -> Result<(), DynError> {
+) -> Result<(), HandlerError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }

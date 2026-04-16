@@ -2,9 +2,17 @@ use lindera::{
     dictionary::load_dictionary, mode::Mode, segmenter::Segmenter,
     tokenizer::Tokenizer as LinderaTokenizer,
 };
+use thiserror::Error;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::config::DynError;
+#[derive(Debug, Error)]
+pub(crate) enum TokenizerError {
+    #[error("Lindera initialization failed: {0}")]
+    Lindera(String),
+
+    #[error("Lindera tokenization failed: {0}")]
+    LinderaTokenization(#[from] lindera::error::LinderaError),
+}
 
 #[derive(Clone)]
 pub(crate) enum Tokenizer {
@@ -14,14 +22,14 @@ pub(crate) enum Tokenizer {
 
 impl Tokenizer {
     /// # Errors
-    /// Returns `DynError` if Lindera tokenizer initialization fails.
-    pub(crate) fn new() -> Result<Self, DynError> {
+    /// Returns `TokenizerError` if Lindera tokenizer initialization fails.
+    pub(crate) fn new() -> Result<Self, TokenizerError> {
         let tokenizer = build_lindera_tokenizer()?;
         Ok(Self::Lindera(Box::new(tokenizer)))
     }
 
     #[must_use]
-    pub(crate) fn with_fallback() -> Self {
+    pub(crate) const fn with_fallback() -> Self {
         Self::Fallback
     }
 
@@ -41,7 +49,10 @@ impl Tokenizer {
     }
 }
 
-fn tokenize_with_lindera(tokenizer: &LinderaTokenizer, text: &str) -> Result<Vec<String>, DynError> {
+fn tokenize_with_lindera(
+    tokenizer: &LinderaTokenizer,
+    text: &str,
+) -> Result<Vec<String>, TokenizerError> {
     let tokens = tokenizer
         .tokenize(text)?
         .into_iter()
@@ -52,8 +63,9 @@ fn tokenize_with_lindera(tokenizer: &LinderaTokenizer, text: &str) -> Result<Vec
     Ok(tokens)
 }
 
-fn build_lindera_tokenizer() -> Result<LinderaTokenizer, DynError> {
-    let dictionary = load_dictionary("embedded://ipadic")?;
+fn build_lindera_tokenizer() -> Result<LinderaTokenizer, TokenizerError> {
+    let dictionary = load_dictionary("embedded://ipadic")
+        .map_err(|e| TokenizerError::Lindera(e.to_string()))?;
     let segmenter = Segmenter::new(Mode::Normal, dictionary, None);
 
     Ok(LinderaTokenizer::new(segmenter))

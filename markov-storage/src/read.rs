@@ -5,7 +5,7 @@ use super::{
     DynError, EDGE_RECORD_SIZE, FLAG_VOCAB_BLOB_RLE,
     FLAG_VOCAB_BLOB_ZSTD, HEADER_SIZE, MAGIC, MODEL_SECTION_HEADER_SIZE, NORMALIZATION_FLAGS,
     START_SECTION_HEADER_SIZE, TOKENIZER_VERSION, VERSION, aligned_metadata_end, chain_to_snapshot,
-    checked_add, compression_mode_from_flags, compute_checksum, descriptor_count_for_ngram_order,
+    checked_add, compression_mode_from_flags, compute_checksum,
     model_record_size, start_record_size, u64_from_usize, usize_from_u32, usize_from_u64,
     validate_special_tokens, validate_token_id, vocab_blob_compression_flags,
 };
@@ -37,7 +37,7 @@ pub(super) fn decode_chain(
         });
     }
 
-    let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order.as_usize()?)?;
+    let expected_section_count = header.expected_section_count()?;
     if header.section_count != expected_section_count {
         return Err(StorageError::Format(format!(
             "section count mismatch: expected {expected_section_count}, got {}",
@@ -72,7 +72,7 @@ pub(super) fn decode_snapshot(bytes: &[u8]) -> Result<super::StorageSnapshot, Dy
     let actual_ngram_order = NgramOrder::new(usize::try_from(header.ngram_order)
         .map_err(|_error| StorageError::Format("header ngram_order exceeds usize range".into()))?)?;
 
-    let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order.as_usize()?)?;
+    let expected_section_count = header.expected_section_count()?;
     if header.section_count != expected_section_count {
         return Err(StorageError::Format(format!(
             "section count mismatch: expected {expected_section_count}, got {}",
@@ -277,7 +277,7 @@ fn descriptor_range(
 }
 
 fn section_label(descriptor: &SectionDescriptor) -> String {
-    match SectionKind::from_u32(descriptor.kind) {
+    match descriptor.kind() {
         Some(SectionKind::Model) => format!("model(order={})", descriptor.flags),
         Some(kind) => kind.label().to_owned(),
         None => format!("unknown({})", descriptor.kind),

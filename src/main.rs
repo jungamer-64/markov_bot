@@ -4,7 +4,8 @@ mod tokenizer;
 
 use std::sync::Arc;
 
-use config::{BotConfig, DynError};
+use anyhow::Result;
+use config::BotConfig;
 use discord_handler::DiscordHandler;
 use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, StreamExt as _};
 use twilight_http::Client as HttpClient;
@@ -22,7 +23,7 @@ use twilight_model::{
     },
 };
 
-fn main() -> Result<(), DynError> {
+fn main() -> Result<()> {
     install_rustls_provider();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -30,7 +31,7 @@ fn main() -> Result<(), DynError> {
     runtime.block_on(async_main())
 }
 
-async fn async_main() -> Result<(), DynError> {
+async fn async_main() -> Result<()> {
     let config = BotConfig::from_env()?;
 
     let http = Arc::new(HttpClient::new(config.discord_token().to_owned()));
@@ -98,7 +99,7 @@ fn install_rustls_provider() {
 async fn register_slash_commands(
     http: &HttpClient,
     application_id: Id<ApplicationMarker>,
-) -> Result<(), DynError> {
+) -> Result<()> {
     let command_options = [CommandOption {
         autocomplete: None,
         channel_types: Some(vec![
@@ -139,7 +140,7 @@ async fn handle_interaction_command(
     handler: &DiscordHandler,
     interaction: twilight_model::application::interaction::Interaction,
     application_id: Id<ApplicationMarker>,
-) -> Result<(), DynError> {
+) -> Result<()> {
     if interaction.kind != InteractionType::ApplicationCommand {
         return Ok(());
     }

@@ -4,8 +4,6 @@ use markov_core::{MaxWords, MinWordsBeforeEos, NgramOrder, Temperature};
 use markov_storage::StorageCompressionMode;
 use thiserror::Error;
 
-pub(crate) type DynError = anyhow::Error;
-
 #[derive(Debug, Error)]
 pub(crate) enum ConfigError {
     #[error("Environment variable {0} is missing")]
@@ -97,7 +95,11 @@ impl BotConfig {
         let ngram_order_val = env_parse_or_default_with(
             &mut get_var,
             "MARKOV_NGRAM_ORDER",
-            NgramOrder::DEFAULT.get() as usize,
+            usize::try_from(NgramOrder::DEFAULT.get()).map_err(|_err| {
+                ConfigError::Core(markov_core::MarkovError::Boundary(
+                    "NgramOrder::DEFAULT exceeds usize range".into(),
+                ))
+            })?,
         )?;
         let ngram_order = NgramOrder::new(ngram_order_val)?;
 
@@ -201,11 +203,37 @@ mod tests {
         BotConfig::from_env_with(|key| env.get(key).cloned().ok_or(std::env::VarError::NotPresent))
     }
 
+    fn ensure(condition: bool, message: &str) -> Result<(), super::ConfigError> {
+        if condition {
+            Ok(())
+        } else {
+            Err(super::ConfigError::ParseError("test".to_owned(), message.to_owned()))
+        }
+    }
+
+    fn ensure_eq<L, R>(left: &L, right: &R, message: &str) -> Result<(), super::ConfigError>
+    where
+        L: PartialEq<R> + std::fmt::Debug,
+        R: std::fmt::Debug,
+    {
+        if left == right {
+            Ok(())
+        } else {
+            Err(super::ConfigError::ParseError(
+                "test".to_owned(),
+                format!("{message}: expected {right:?}, got {left:?}"),
+            ))
+        }
+    }
+
     #[test]
     fn defaults_ngram_order_to_six() -> Result<(), super::ConfigError> {
         let config = config_from_pairs(&[("DISCORD_TOKEN", "token")])?;
-        assert_eq!(config.ngram_order().as_usize().map_err(|e| super::ConfigError::Core(e))?, 6);
-        Ok(())
+        ensure_eq(
+            &config.ngram_order().as_usize().map_err(super::ConfigError::Core)?,
+            &6,
+            "default ngram order should be 6",
+        )
     }
 
     #[test]
@@ -216,19 +244,37 @@ mod tests {
         let sixteen =
             config_from_pairs(&[("DISCORD_TOKEN", "token"), ("MARKOV_NGRAM_ORDER", "16")])?;
 
-        assert_eq!(lower.ngram_order().as_usize().map_err(|e| super::ConfigError::Core(e))?, 1);
-        assert_eq!(upper.ngram_order().as_usize().map_err(|e| super::ConfigError::Core(e))?, 6);
-        assert_eq!(seven.ngram_order().as_usize().map_err(|e| super::ConfigError::Core(e))?, 7);
-        assert_eq!(sixteen.ngram_order().as_usize().map_err(|e| super::ConfigError::Core(e))?, 16);
+        ensure_eq(
+            &lower.ngram_order().as_usize().map_err(super::ConfigError::Core)?,
+            &1,
+            "ngram order 1 should be accepted",
+        )?;
+        ensure_eq(
+            &upper.ngram_order().as_usize().map_err(super::ConfigError::Core)?,
+            &6,
+            "ngram order 6 should be accepted",
+        )?;
+        ensure_eq(
+            &seven.ngram_order().as_usize().map_err(super::ConfigError::Core)?,
+            &7,
+            "ngram order 7 should be accepted",
+        )?;
+        ensure_eq(
+            &sixteen
+                .ngram_order()
+                .as_usize()
+                .map_err(super::ConfigError::Core)?,
+            &16,
+            "ngram order 16 should be accepted",
+        )?;
         Ok(())
     }
 
     #[test]
     fn rejects_zero_ngram_order() -> Result<(), super::ConfigError> {
-        assert!(
+        ensure(
             config_from_pairs(&[("DISCORD_TOKEN", "token"), ("MARKOV_NGRAM_ORDER", "0")]).is_err(),
-            "ngram order 0 should be rejected"
-        );
-        Ok(())
+            "ngram order 0 should be rejected",
+        )
     }
 }

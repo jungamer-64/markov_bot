@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use crate::{
     config::DynError,
+    descriptor_count_for_ngram_order,
     markov::{Count, NgramOrder, Prefix, TokenId},
 };
 
@@ -18,12 +19,26 @@ pub(super) struct Header {
     pub(super) checksum: u64,
 }
 
+impl Header {
+    pub(super) fn expected_section_count(&self) -> Result<u64, DynError> {
+        let order = usize::try_from(self.ngram_order)
+            .map_err(|_err| "ngram_order exceeds usize range")?;
+        descriptor_count_for_ngram_order(order)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct SectionDescriptor {
     pub(super) kind: u32,
     pub(super) flags: u32,
     pub(super) offset: u64,
     pub(super) size: u64,
+}
+
+impl SectionDescriptor {
+    pub(super) const fn kind(&self) -> Option<SectionKind> {
+        SectionKind::from_u32(self.kind)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +96,7 @@ impl SectionTable {
         let mut matches = self
             .entries
             .iter()
-            .filter(|entry| SectionKind::from_u32(entry.descriptor.kind) == Some(kind));
+            .filter(|entry| entry.descriptor.kind() == Some(kind));
 
         let entry = matches
             .next()
@@ -95,7 +110,7 @@ impl SectionTable {
 
     pub(super) fn model_entries(&self) -> impl Iterator<Item = &SectionEntry> {
         self.entries.iter().filter(|entry| {
-            SectionKind::from_u32(entry.descriptor.kind) == Some(SectionKind::Model)
+            entry.descriptor.kind() == Some(SectionKind::Model)
         })
     }
 }

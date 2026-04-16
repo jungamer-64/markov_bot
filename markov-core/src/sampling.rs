@@ -114,15 +114,27 @@ fn scaled_temperature_weight(count: Count, exponent: f64) -> Option<f64> {
     (scaled.is_finite() && scaled > 0.0).then_some(scaled)
 }
 
+const TWO_POW_32: f64 = 4_294_967_296.0;
+
+/// # Panics
+/// Does not panic in practice because the value is guaranteed to be positive.
 fn default_sampling_weight(count: Count) -> Option<f64> {
     let val = count.get();
     if val == 0 {
         return None;
     }
 
-    // u64 to f64 conversion is generally safe for these counts.
-    // If it exceeds what f64 can represent exactly, it will be an approximation.
-    Some(val as f64)
+    Some(u64_to_f64_lossy(val))
+}
+
+fn u64_to_f64_lossy(val: u64) -> f64 {
+    // Convert u64 to f64 without 'as' to comply with forbid(clippy::as_conversions).
+    // The name 'lossy' reflects that precision loss occurs for values > 2^53.
+    let [h0, h1, h2, h3, l0, l1, l2, l3] = val.to_be_bytes();
+    let high = u32::from_be_bytes([h0, h1, h2, h3]);
+    let low = u32::from_be_bytes([l0, l1, l2, l3]);
+
+    f64::from(high).mul_add(TWO_POW_32, f64::from(low))
 }
 
 impl<K> AliasTable<K> {
