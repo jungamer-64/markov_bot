@@ -5,8 +5,8 @@ use tempfile::{Builder, TempPath};
 
 use crate::{
     CHECKSUM_OFFSET, DESCRIPTOR_SIZE, HEADER_SIZE, SECTION_COUNT_BASE, StorageCompressionMode,
-    StorageError, compute_checksum, decode_v8_chain, descriptor_count_for_ngram_order,
-    encode_v8_chain,
+    StorageError, compute_checksum, decode_chain, descriptor_count_for_ngram_order,
+    encode_chain,
 };
 
 pub(super) const TEST_MIN_EDGE_COUNT: u64 = 1;
@@ -36,14 +36,16 @@ pub(super) fn ensure(condition: bool, message: &str) -> Result<(), StorageError>
 
 pub(super) fn ensure_eq<L, R>(left: &L, right: &R, message: &str) -> Result<(), StorageError>
 where
-    L: PartialEq<R>,
+    L: PartialEq<R> + ?Sized,
+    R: ?Sized,
 {
     ensure(left == right, message)
 }
 
 pub(super) fn ensure_ne<L, R>(left: &L, right: &R, message: &str) -> Result<(), StorageError>
 where
-    L: PartialEq<R>,
+    L: PartialEq<R> + ?Sized,
+    R: ?Sized,
 {
     ensure(left != right, message)
 }
@@ -70,7 +72,7 @@ pub(super) fn write_sample_file_with_settings(
     compression_mode: StorageCompressionMode,
 ) -> Result<TempPath, StorageError> {
     let file_path = temp_file_path(prefix)?;
-    let payload = encode_v8_chain(chain, min_edge_count, compression_mode)?;
+    let payload = encode_chain(chain, markov_core::Count(min_edge_count), compression_mode)?;
     fs::write(&file_path, payload)?;
     Ok(file_path)
 }
@@ -80,7 +82,7 @@ pub(super) fn load_sample_file(
     expected_ngram_order: usize,
 ) -> Result<MarkovChain, StorageError> {
     let bytes = fs::read(path)?;
-    decode_v8_chain(bytes.as_slice(), expected_ngram_order)
+    decode_chain(bytes.as_slice(), expected_ngram_order)
 }
 
 pub(super) fn sample_chain_with_order(ngram_order: usize) -> Result<MarkovChain, StorageError> {
@@ -99,7 +101,7 @@ pub(super) fn sample_chain_with_order(ngram_order: usize) -> Result<MarkovChain,
         )?;
     }
     ensure(
-        chain.models.len() == ngram_order,
+        chain.models().len() == ngram_order,
         "model count should match ngram order",
     )?;
     Ok(chain)

@@ -7,11 +7,11 @@ use crate::{
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Header {
-    pub(super) magic: [u8; 8],
-    pub(super) version: u32,
+    pub(super) _magic: [u8; 8],
+    pub(super) _version: u32,
     pub(super) flags: u32,
-    pub(super) tokenizer_version: u32,
-    pub(super) normalization_flags: u32,
+    pub(super) _tokenizer_version: u32,
+    pub(super) _normalization_flags: u32,
     pub(super) ngram_order: u32,
     pub(super) section_count: u64,
     pub(super) file_size: u64,

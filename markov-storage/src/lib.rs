@@ -25,7 +25,6 @@ type DynError = StorageError;
 
 const MAGIC: [u8; 8] = *b"MKV3BIN\0";
 const VERSION: u32 = 8;
-const FLAGS: u32 = 0;
 const FLAG_VOCAB_BLOB_RLE: u32 = 1 << 0;
 const FLAG_VOCAB_BLOB_ZSTD: u32 = 1 << 1;
 const FLAG_VOCAB_BLOB_LZ4_FLEX: u32 = 1 << 2;
@@ -49,29 +48,33 @@ const SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Error)]
 pub enum StorageError {
-    #[error("{0}")]
-    Invalid(String),
-    #[error("zstd decompression failed: {0}")]
-    Zstd(#[from] std::io::Error),
+    #[error("storage format error: {0}")]
+    Format(String),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("lz4 decompression failed: {0}")]
     Lz4(#[from] lz4_flex::block::DecompressError),
+    #[error("markov core error: {0}")]
+    Core(#[from] markov_core::MarkovError),
+    #[error("checksum mismatch: expected {expected:016x}, got {actual:016x}")]
+    Checksum { expected: u64, actual: u64 },
+    #[error("magic mismatch: expected {expected:?}, got {actual:?}")]
+    Magic { expected: [u8; 8], actual: [u8; 8] },
+    #[error("unsupported version: {0}")]
+    Version(u32),
+    #[error("ngram order mismatch: expected {expected}, got {actual}")]
+    NgramOrderMismatch { expected: usize, actual: usize },
 }
 
 impl From<&str> for StorageError {
     fn from(value: &str) -> Self {
-        Self::Invalid(value.to_owned())
+        Self::Format(value.to_owned())
     }
 }
 
 impl From<String> for StorageError {
     fn from(value: String) -> Self {
-        Self::Invalid(value)
-    }
-}
-
-impl From<markov_core::MarkovError> for StorageError {
-    fn from(value: markov_core::MarkovError) -> Self {
-        Self::Invalid(value.to_string())
+        Self::Format(value)
     }
 }
 
@@ -173,7 +176,7 @@ impl StorageSnapshot {
 ///
 /// # Errors
 /// Returns `StorageError` if decoding fails.
-pub fn decode_v8_chain(bytes: &[u8], expected_ngram_order: usize) -> Result<MarkovChain, DynError> {
+pub fn decode_chain(bytes: &[u8], expected_ngram_order: usize) -> Result<MarkovChain, DynError> {
     read::decode_chain(bytes, expected_ngram_order)
 }
 
@@ -181,14 +184,14 @@ pub fn decode_v8_chain(bytes: &[u8], expected_ngram_order: usize) -> Result<Mark
 ///
 /// # Errors
 /// Returns `StorageError` if encoding or validation fails.
-pub fn encode_v8_chain(
+pub fn encode_chain(
     chain: &MarkovChain,
     min_edge_count: Count,
     compression_mode: StorageCompressionMode,
 ) -> Result<Vec<u8>, DynError> {
     let sections = write::compile_chain(chain, min_edge_count)?;
     let payload = write::encode_storage(&sections, compression_mode)?;
-    read::decode_chain(payload.as_slice(), chain.ngram_order)?;
+    read::decode_chain(payload.as_slice(), chain.ngram_order())?;
     Ok(payload)
 }
 
@@ -196,7 +199,7 @@ pub fn encode_v8_chain(
 ///
 /// # Errors
 /// Returns `StorageError` if decoding fails.
-pub fn decode_v8_snapshot(bytes: &[u8]) -> Result<StorageSnapshot, DynError> {
+pub fn decode_snapshot(bytes: &[u8]) -> Result<StorageSnapshot, DynError> {
     read::decode_snapshot(bytes)
 }
 
@@ -204,12 +207,12 @@ pub fn decode_v8_snapshot(bytes: &[u8]) -> Result<StorageSnapshot, DynError> {
 ///
 /// # Errors
 /// Returns `StorageError` if encoding or validation fails.
-pub fn encode_v8_snapshot(
+pub fn encode_snapshot(
     snapshot: &StorageSnapshot,
     compression_mode: StorageCompressionMode,
 ) -> Result<Vec<u8>, DynError> {
     let chain = snapshot_to_chain(snapshot)?;
-    encode_v8_chain(&chain, 1, compression_mode)
+    encode_chain(&chain, Count(1), compression_mode)
 }
 
 /// Converts a storage snapshot to a Markov chain.
@@ -228,9 +231,9 @@ pub fn snapshot_to_chain(snapshot: &StorageSnapshot) -> Result<MarkovChain, DynE
         for entry in &model.entries {
             let mut edges = HashMap::new();
             for edge in &entry.edges {
-                edges.insert(edge.next, edge.count);
+                edges.insert(markov_core::TokenId(edge.next), markov_core::Count(edge.count));
             }
-            prefixes.insert(entry.prefix.clone(), edges);
+            prefixes.insert(markov_core::Prefix::new(entry.prefix.iter().map(|&id| markov_core::TokenId(id)).collect()), edges);
         }
         let slot = models
             .get_mut(model.order - 1)
@@ -241,16 +244,16 @@ pub fn snapshot_to_chain(snapshot: &StorageSnapshot) -> Result<MarkovChain, DynE
     let starts = snapshot
         .starts
         .iter()
-        .map(|entry| (entry.prefix.clone(), entry.count))
+        .map(|entry| (markov_core::Prefix::new(entry.prefix.iter().map(|&id| markov_core::TokenId(id)).collect()), markov_core::Count(entry.count)))
         .collect::<HashMap<_, _>>();
 
-    Ok(MarkovChain {
-        ngram_order: snapshot.ngram_order(),
+    Ok(MarkovChain::from_parts(
+        snapshot.ngram_order(),
         token_to_id,
-        id_to_token: snapshot.tokens.clone(),
+        snapshot.tokens.clone(),
         models,
         starts,
-    })
+    )?)
 }
 
 /// Converts a Markov chain to a storage snapshot.
@@ -261,27 +264,27 @@ pub fn chain_to_snapshot(
     chain: &MarkovChain,
     compression_mode: StorageCompressionMode,
 ) -> Result<StorageSnapshot, DynError> {
-    validate_ngram_order(chain.ngram_order, "chain ngram order")
+    validate_ngram_order(chain.ngram_order(), "chain ngram order")
         .map_err(|error| error.to_string())?;
-    validate_special_tokens(chain.id_to_token.as_slice())?;
+    validate_special_tokens(chain.id_to_token())?;
     validate_token_index(chain)?;
 
-    if chain.models.len() != chain.ngram_order {
+    if chain.models().len() != chain.ngram_order() {
         return Err("model count does not match ngram order".into());
     }
 
     let mut starts = chain
-        .starts
+        .starts()
         .iter()
         .map(|(prefix, count)| SnapshotEntry {
-            prefix: prefix.clone(),
-            count: *count,
+            prefix: prefix.as_slice().iter().map(|&id| id.0).collect(),
+            count: count.0,
         })
         .collect::<Vec<_>>();
     starts.sort_unstable_by(|left, right| left.prefix.cmp(&right.prefix));
 
-    let mut models = Vec::with_capacity(chain.models.len());
-    for (index, model) in chain.models.iter().enumerate().rev() {
+    let mut models = Vec::with_capacity(chain.models().len());
+    for (index, model) in chain.models().iter().enumerate().rev() {
         let order = index + 1;
         let mut entries = model
             .iter()
@@ -289,13 +292,13 @@ pub fn chain_to_snapshot(
                 let mut snapshot_edges = edges
                     .iter()
                     .map(|(next, count)| SnapshotEdge {
-                        next: *next,
-                        count: *count,
+                        next: next.0,
+                        count: count.0,
                     })
                     .collect::<Vec<_>>();
                 snapshot_edges.sort_unstable_by_key(|edge| edge.next);
                 SnapshotModelEntry {
-                    prefix: prefix.clone(),
+                    prefix: prefix.as_slice().iter().map(|&id| id.0).collect(),
                     edges: snapshot_edges,
                 }
             })
@@ -308,10 +311,10 @@ pub fn chain_to_snapshot(
         schema_version: SNAPSHOT_SCHEMA_VERSION,
         source: SnapshotSource {
             storage_version: VERSION,
-            ngram_order: chain.ngram_order,
+            ngram_order: chain.ngram_order(),
             compression: compression_mode,
         },
-        tokens: chain.id_to_token.clone(),
+        tokens: chain.id_to_token().to_vec(),
         starts,
         models,
     };
@@ -321,15 +324,13 @@ pub fn chain_to_snapshot(
 
 fn validate_snapshot(snapshot: &StorageSnapshot) -> Result<(), DynError> {
     if snapshot.schema_version != SNAPSHOT_SCHEMA_VERSION {
-        return Err(format!(
+        return Err(StorageError::Format(format!(
             "unsupported snapshot schema version: {}",
             snapshot.schema_version
-        )
-        .into());
+        )));
     }
 
-    validate_ngram_order(snapshot.source.ngram_order, "snapshot ngram order")
-        .map_err(|error| error.to_string())?;
+    validate_ngram_order(snapshot.source.ngram_order, "snapshot ngram order")?;
     validate_special_tokens(snapshot.tokens.as_slice())?;
     let token_to_id = build_token_index(snapshot.tokens.as_slice())?;
     let token_count = u32_from_usize(snapshot.tokens.len(), "snapshot token count")?;
@@ -343,7 +344,9 @@ fn validate_snapshot(snapshot: &StorageSnapshot) -> Result<(), DynError> {
         .map(|model| model.order)
         .collect::<BTreeSet<_>>();
     if actual_orders != expected_orders {
-        return Err("snapshot models must cover every order from ngram_order down to 1".into());
+        return Err(StorageError::Format(
+            "snapshot models must cover every order from ngram_order down to 1".into(),
+        ));
     }
 
     let mut seen_starts = BTreeSet::new();
@@ -355,15 +358,23 @@ fn validate_snapshot(snapshot: &StorageSnapshot) -> Result<(), DynError> {
             "snapshot start",
         )?;
         if entry.count == 0 {
-            return Err("snapshot start count must be greater than zero".into());
+            return Err(StorageError::Format(
+                "snapshot start count must be greater than zero".into(),
+            ));
         }
         if !seen_starts.insert(entry.prefix.clone()) {
-            return Err("duplicate snapshot start prefix".into());
+            return Err(StorageError::Format(
+                "duplicate snapshot start prefix".into(),
+            ));
         }
     }
 
-    if token_to_id.get(BOS_TOKEN) != Some(&0) || token_to_id.get(EOS_TOKEN) != Some(&1) {
-        return Err("snapshot special token ids are invalid".into());
+    if token_to_id.get(BOS_TOKEN) != Some(&markov_core::TokenId(0))
+        || token_to_id.get(EOS_TOKEN) != Some(&markov_core::TokenId(1))
+    {
+        return Err(StorageError::Format(
+            "snapshot special token ids are invalid".into(),
+        ));
     }
 
     for model in &snapshot.models {
@@ -376,25 +387,27 @@ fn validate_snapshot(snapshot: &StorageSnapshot) -> Result<(), DynError> {
                 "snapshot model entry",
             )?;
             if !seen_prefixes.insert(entry.prefix.clone()) {
-                return Err(
-                    format!("duplicate snapshot model prefix for order {}", model.order).into(),
-                );
+                return Err(StorageError::Format(format!(
+                    "duplicate snapshot model prefix for order {}",
+                    model.order
+                )));
             }
             if entry.edges.is_empty() {
-                return Err(format!(
+                return Err(StorageError::Format(format!(
                     "snapshot model entry for order {} has no edges",
                     model.order
-                )
-                .into());
+                )));
             }
             let mut seen_edges = BTreeSet::new();
             for edge in &entry.edges {
                 validate_token_id(edge.next, token_count, "snapshot edge")?;
                 if edge.count == 0 {
-                    return Err("snapshot edge count must be greater than zero".into());
+                    return Err(StorageError::Format(
+                        "snapshot edge count must be greater than zero".into(),
+                    ));
                 }
                 if !seen_edges.insert(edge.next) {
-                    return Err("duplicate snapshot edge target".into());
+                    return Err(StorageError::Format("duplicate snapshot edge target".into()));
                 }
             }
         }
@@ -422,11 +435,11 @@ fn validate_snapshot_prefix(
     Ok(())
 }
 
-fn build_token_index(tokens: &[String]) -> Result<HashMap<String, u32>, DynError> {
+fn build_token_index(tokens: &[String]) -> Result<HashMap<String, markov_core::TokenId>, DynError> {
     let mut index = HashMap::new();
 
     for (position, token) in tokens.iter().enumerate() {
-        let token_id = u32_from_usize(position, "token id")?;
+        let token_id = markov_core::TokenId(u32_from_usize(position, "token id")?);
 
         if index.insert(token.clone(), token_id).is_some() {
             return Err(format!("duplicate token in vocab: {token}").into());
@@ -465,14 +478,14 @@ fn validate_special_tokens(tokens: &[String]) -> Result<(), DynError> {
 }
 
 fn validate_token_index(chain: &MarkovChain) -> Result<(), DynError> {
-    if chain.token_to_id.len() != chain.id_to_token.len() {
+    if chain.token_to_id().len() != chain.id_to_token().len() {
         return Err("token index size mismatch".into());
     }
 
-    for (index, token) in chain.id_to_token.iter().enumerate() {
-        let expected_id = u32_from_usize(index, "token index")?;
+    for (index, token) in chain.id_to_token().iter().enumerate() {
+        let expected_id = markov_core::TokenId(u32_from_usize(index, "token index")?);
         let actual_id = chain
-            .token_to_id
+            .token_to_id()
             .get(token)
             .copied()
             .ok_or_else(|| format!("token_to_id is missing '{token}'"))?;
@@ -592,4 +605,14 @@ fn vocab_blob_compression_flags(flags: u32) -> Result<u32, DynError> {
     }
 
     Ok(compression_flags)
+}
+
+pub(crate) fn write_u64_at(bytes: &mut [u8], offset: usize, value: u64) -> Result<(), DynError> {
+    let end = offset.checked_add(8).ok_or("write_u64_at: offset overflow")?;
+    let slice = bytes
+        .get_mut(offset..end)
+        .ok_or("write_u64_at: offset out of bounds")?;
+
+    slice.copy_from_slice(&value.to_le_bytes());
+    Ok(())
 }

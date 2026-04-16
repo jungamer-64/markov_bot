@@ -6,7 +6,7 @@ use std::{
 };
 
 use markov_core::{GenerationOptions, MarkovChain};
-use markov_storage::{StorageCompressionMode, decode_v8_chain, encode_v8_chain};
+use markov_storage::{StorageCompressionMode, decode_chain, encode_chain};
 use rand::rng;
 use tokio::fs;
 use tokio::sync::Mutex;
@@ -154,15 +154,18 @@ impl DiscordHandler {
 
     fn build_reply_text(&self, chain: &MarkovChain) -> String {
         let mut rng = rng();
+        let options = GenerationOptions::new(
+            self.config.max_words,
+            self.config.generation_temperature,
+            self.config.min_words_before_eos,
+        );
+
+        let Ok(options) = options else {
+            return GENERATION_FALLBACK.to_owned();
+        };
+
         chain
-            .generate_sentence_with_options(
-                &mut rng,
-                GenerationOptions::new(
-                    self.config.max_words,
-                    self.config.generation_temperature,
-                    self.config.min_words_before_eos,
-                ),
-            )
+            .generate_sentence_with_options(&mut rng, options)
             .unwrap_or_else(|| GENERATION_FALLBACK.to_owned())
     }
 
@@ -193,7 +196,7 @@ async fn load_chain(path: &Path, expected_ngram_order: usize) -> Result<MarkovCh
         Err(error) => return Err(error.into()),
     };
 
-    decode_v8_chain(bytes.as_slice(), expected_ngram_order).map_err(Into::into)
+    decode_chain(bytes.as_slice(), expected_ngram_order).map_err(Into::into)
 }
 
 async fn save_chain(
@@ -206,7 +209,7 @@ async fn save_chain(
         fs::create_dir_all(parent).await?;
     }
 
-    let payload = encode_v8_chain(chain, min_edge_count, compression_mode)?;
+    let payload = encode_chain(chain, markov_core::Count(min_edge_count), compression_mode)?;
     fs::write(path, payload).await?;
     Ok(())
 }

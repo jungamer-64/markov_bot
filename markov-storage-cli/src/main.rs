@@ -6,15 +6,11 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Arg, Command};
-use markov_storage::{StorageSnapshot, decode_v8_snapshot, encode_v8_snapshot};
-
-mod legacy_v6;
-
-const STORAGE_MAGIC: [u8; 8] = *b"MKV3BIN\0";
+use markov_storage::{StorageSnapshot, decode_snapshot as decode_storage_snapshot, encode_snapshot as encode_storage_snapshot};
 
 fn main() -> Result<()> {
     let matches = Command::new("markov-storage")
-        .about("Inspect, migrate, and edit markov storage files")
+        .about("Inspect, and edit markov storage files")
         .subcommand(
             Command::new("inspect").arg(
                 Arg::new("input")
@@ -37,19 +33,6 @@ fn main() -> Result<()> {
         )
         .subcommand(
             Command::new("import")
-                .arg(
-                    Arg::new("input")
-                        .long("input")
-                        .required(true),
-                )
-                .arg(
-                    Arg::new("output")
-                        .long("output")
-                        .required(true),
-                ),
-        )
-        .subcommand(
-            Command::new("migrate")
                 .arg(
                     Arg::new("input")
                         .long("input")
@@ -88,22 +71,13 @@ fn main() -> Result<()> {
                 .ok_or_else(|| anyhow!("missing output"))?;
             import_command(Path::new(input), Path::new(output))
         }
-        Some(("migrate", sub)) => {
-            let input = sub
-                .get_one::<String>("input")
-                .ok_or_else(|| anyhow!("missing input"))?;
-            let output = sub
-                .get_one::<String>("output")
-                .ok_or_else(|| anyhow!("missing output"))?;
-            migrate_command(Path::new(input), Path::new(output))
-        }
         _ => bail!("no subcommand provided"),
     }
 }
 
 fn inspect_command(input: &Path) -> Result<()> {
     let bytes = read_bytes(input)?;
-    let snapshot = decode_snapshot(bytes.as_slice())?;
+    let snapshot = decode_storage_snapshot(bytes.as_slice())?;
 
     println!("version={}", snapshot.source.storage_version);
     println!("compression={}", snapshot.source.compression.as_env_value());
@@ -130,54 +104,15 @@ fn inspect_command(input: &Path) -> Result<()> {
 fn export_command(input: &Path, output: &Path) -> Result<()> {
     ensure_distinct_paths(input, output)?;
     let bytes = read_bytes(input)?;
-    let snapshot = decode_snapshot(bytes.as_slice())?;
+    let snapshot = decode_storage_snapshot(bytes.as_slice())?;
     write_json(output, &snapshot)
 }
 
 fn import_command(input: &Path, output: &Path) -> Result<()> {
     ensure_distinct_paths(input, output)?;
     let snapshot = read_json(input)?;
-    let payload = encode_v8_snapshot(&snapshot, snapshot.source.compression)?;
+    let payload = encode_storage_snapshot(&snapshot, snapshot.source.compression)?;
     write_bytes(output, payload.as_slice())
-}
-
-fn migrate_command(input: &Path, output: &Path) -> Result<()> {
-    ensure_distinct_paths(input, output)?;
-    let bytes = read_bytes(input)?;
-    let version = detect_storage_version(bytes.as_slice())?;
-    if version != 6 {
-        bail!("migrate only accepts v6 input, got v{version}");
-    }
-
-    let snapshot = legacy_v6::decode_snapshot(bytes.as_slice())?;
-    let payload = encode_v8_snapshot(&snapshot, snapshot.source.compression)?;
-    write_bytes(output, payload.as_slice())
-}
-
-fn decode_snapshot(bytes: &[u8]) -> Result<StorageSnapshot> {
-    match detect_storage_version(bytes)? {
-        6 => legacy_v6::decode_snapshot(bytes),
-        8 => decode_v8_snapshot(bytes).map_err(Into::into),
-        version => bail!("unsupported storage version: {version}"),
-    }
-}
-
-fn detect_storage_version(bytes: &[u8]) -> Result<u32> {
-    let magic = bytes
-        .get(..STORAGE_MAGIC.len())
-        .ok_or_else(|| anyhow!("storage file is shorter than the header"))?;
-    if magic != STORAGE_MAGIC {
-        bail!("storage magic mismatch");
-    }
-
-    let version_bytes = bytes
-        .get(STORAGE_MAGIC.len()..(STORAGE_MAGIC.len() + 4))
-        .ok_or_else(|| anyhow!("storage file is missing version"))?;
-    let version = <[u8; 4]>::try_from(version_bytes)
-        .map(u32::from_le_bytes)
-        .map_err(|_error| anyhow!("storage version bytes are invalid"))?;
-
-    Ok(version)
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>> {

@@ -2,6 +2,7 @@ use std::{collections::HashMap, str};
 
 use lz4_flex::block::decompress_into as lz4_decompress_into;
 
+use crate::StorageError;
 use super::{
     DynError, EDGE_RECORD_SIZE, FLAG_VOCAB_BLOB_LZ4_FLEX, FLAG_VOCAB_BLOB_RLE,
     FLAG_VOCAB_BLOB_ZSTD, HEADER_SIZE, MAGIC, MODEL_SECTION_HEADER_SIZE, NORMALIZATION_FLAGS,
@@ -32,40 +33,37 @@ pub(super) fn decode_chain(
 
     let header = validate_header(bytes)?;
     let actual_ngram_order = usize::try_from(header.ngram_order)
-        .map_err(|_error| "header ngram_order exceeds usize range")?;
+        .map_err(|_error| StorageError::Format("header ngram_order exceeds usize range".into()))?;
     validate_ngram_order(actual_ngram_order, "header ngram_order")?;
     if actual_ngram_order != expected_ngram_order {
-        return Err(format!(
-            "saved ngram order mismatch: expected {expected_ngram_order}, got {actual_ngram_order}"
-        )
-        .into());
+        return Err(StorageError::NgramOrderMismatch {
+            expected: expected_ngram_order,
+            actual: actual_ngram_order,
+        });
     }
 
     let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order)?;
     if header.section_count != expected_section_count {
-        return Err(format!(
+        return Err(StorageError::Format(format!(
             "section count mismatch: expected {expected_section_count}, got {}",
             header.section_count
-        )
-        .into());
+        )));
     }
 
     let stored_file_size = u64_from_usize(bytes.len(), "file size")?;
     if header.file_size != stored_file_size {
-        return Err(format!(
+        return Err(StorageError::Format(format!(
             "file size mismatch: header={}, actual={stored_file_size}",
             header.file_size
-        )
-        .into());
+        )));
     }
 
     let actual_checksum = compute_checksum(bytes)?;
     if header.checksum != actual_checksum {
-        return Err(format!(
-            "checksum mismatch: expected {}, got {actual_checksum}",
-            header.checksum
-        )
-        .into());
+        return Err(StorageError::Checksum {
+            expected: header.checksum,
+            actual: actual_checksum,
+        });
     }
 
     let table = build_section_table(bytes, &header)?;
@@ -77,34 +75,31 @@ pub(super) fn decode_chain(
 pub(super) fn decode_snapshot(bytes: &[u8]) -> Result<super::StorageSnapshot, DynError> {
     let header = validate_header(bytes)?;
     let actual_ngram_order = usize::try_from(header.ngram_order)
-        .map_err(|_error| "header ngram_order exceeds usize range")?;
+        .map_err(|_error| StorageError::Format("header ngram_order exceeds usize range".into()))?;
     validate_ngram_order(actual_ngram_order, "header ngram_order")?;
 
     let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order)?;
     if header.section_count != expected_section_count {
-        return Err(format!(
+        return Err(StorageError::Format(format!(
             "section count mismatch: expected {expected_section_count}, got {}",
             header.section_count
-        )
-        .into());
+        )));
     }
 
     let stored_file_size = u64_from_usize(bytes.len(), "file size")?;
     if header.file_size != stored_file_size {
-        return Err(format!(
+        return Err(StorageError::Format(format!(
             "file size mismatch: header={}, actual={stored_file_size}",
             header.file_size
-        )
-        .into());
+        )));
     }
 
     let actual_checksum = compute_checksum(bytes)?;
     if header.checksum != actual_checksum {
-        return Err(format!(
-            "checksum mismatch: expected {}, got {actual_checksum}",
-            header.checksum
-        )
-        .into());
+        return Err(StorageError::Checksum {
+            expected: header.checksum,
+            actual: actual_checksum,
+        });
     }
 
     let table = build_section_table(bytes, &header)?;
@@ -117,7 +112,9 @@ pub(super) fn decode_snapshot(bytes: &[u8]) -> Result<super::StorageSnapshot, Dy
 
 fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {
     if bytes.len() < HEADER_SIZE {
-        return Err("storage file is shorter than the header".into());
+        return Err(StorageError::Format(
+            "storage file is shorter than the header".into(),
+        ));
     }
 
     let mut cursor = 0_usize;
@@ -125,12 +122,15 @@ fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {
     let mut magic_bytes = [0_u8; 8];
     magic_bytes.copy_from_slice(magic);
     if magic_bytes != MAGIC {
-        return Err("storage magic mismatch".into());
+        return Err(StorageError::Magic {
+            expected: MAGIC,
+            actual: magic_bytes,
+        });
     }
 
     let version = read_u32_value(bytes, &mut cursor)?;
     if version != VERSION {
-        return Err(format!("unsupported storage version: {version}").into());
+        return Err(StorageError::Version(version));
     }
 
     let flags = read_u32_value(bytes, &mut cursor)?;
@@ -138,12 +138,16 @@ fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {
 
     let tokenizer_version = read_u32_value(bytes, &mut cursor)?;
     if tokenizer_version != TOKENIZER_VERSION {
-        return Err(format!("unsupported tokenizer version: {tokenizer_version}").into());
+        return Err(StorageError::Format(format!(
+            "unsupported tokenizer version: {tokenizer_version}"
+        )));
     }
 
     let normalization_flags = read_u32_value(bytes, &mut cursor)?;
     if normalization_flags != NORMALIZATION_FLAGS {
-        return Err(format!("unsupported normalization flags: {normalization_flags}").into());
+        return Err(StorageError::Format(format!(
+            "unsupported normalization flags: {normalization_flags}"
+        )));
     }
 
     let ngram_order = read_u32_value(bytes, &mut cursor)?;
@@ -152,11 +156,11 @@ fn validate_header(bytes: &[u8]) -> Result<Header, DynError> {
     let checksum = read_u64_value(bytes, &mut cursor)?;
 
     Ok(Header {
-        magic: magic_bytes,
-        version,
+        _magic: magic_bytes,
+        _version: version,
         flags,
-        tokenizer_version,
-        normalization_flags,
+        _tokenizer_version: tokenizer_version,
+        _normalization_flags: normalization_flags,
         ngram_order,
         section_count,
         file_size,
@@ -372,7 +376,7 @@ fn parse_starts_section(bytes: &[u8], ngram_order: usize) -> Result<Vec<StartRec
     for _ in 0..record_count {
         records.push(StartRecord {
             prefix: read_prefix(bytes, &mut cursor, ngram_order)?,
-            cumulative: read_u64_value(bytes, &mut cursor)?,
+            cumulative: Count(read_u64_value(bytes, &mut cursor)?),
         });
     }
 
@@ -413,15 +417,15 @@ fn parse_model_section(bytes: &[u8], order: usize) -> Result<ModelSection, DynEr
             prefix: read_prefix(bytes, &mut cursor, order)?,
             edge_start: read_u32_value(bytes, &mut cursor)?,
             edge_len: read_u32_value(bytes, &mut cursor)?,
-            total: read_u64_value(bytes, &mut cursor)?,
+            total: Count(read_u64_value(bytes, &mut cursor)?),
         });
     }
 
     let mut edges = Vec::with_capacity(edge_count);
     for _ in 0..edge_count {
         edges.push(EdgeRecord {
-            next: read_u32_value(bytes, &mut cursor)?,
-            cumulative: read_u64_value(bytes, &mut cursor)?,
+            next: TokenId(read_u32_value(bytes, &mut cursor)?),
+            cumulative: Count(read_u64_value(bytes, &mut cursor)?),
         });
     }
 
@@ -435,9 +439,9 @@ fn parse_model_section(bytes: &[u8], order: usize) -> Result<ModelSection, DynEr
 fn read_prefix(bytes: &[u8], cursor: &mut usize, order: usize) -> Result<Prefix, DynError> {
     let mut prefix = Vec::with_capacity(order);
     for _ in 0..order {
-        prefix.push(read_u32_value(bytes, cursor)?);
+        prefix.push(TokenId(read_u32_value(bytes, cursor)?));
     }
-    Ok(prefix)
+    Ok(Prefix::new(prefix))
 }
 
 fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
@@ -458,7 +462,7 @@ fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
         .enumerate()
         .map(|(index, token)| {
             let token_id =
-                u32::try_from(index).map_err(|_error| "token count exceeds u32 range")?;
+                TokenId(u32::try_from(index).map_err(|_error| "token count exceeds u32 range")?);
             Ok((token.clone(), token_id))
         })
         .collect::<Result<HashMap<_, _>, DynError>>()?;
@@ -474,13 +478,13 @@ fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
         token_count,
     )?;
 
-    Ok(MarkovChain {
-        ngram_order: sections.ngram_order,
+    MarkovChain::from_parts(
+        sections.ngram_order,
         token_to_id,
         id_to_token,
         models,
         starts,
-    })
+    ).map_err(|error| error.to_string().into())
 }
 
 fn decode_starts(
@@ -490,7 +494,7 @@ fn decode_starts(
 ) -> Result<HashMap<Prefix, Count>, DynError> {
     let mut starts = HashMap::with_capacity(records.len());
     let mut previous_prefix: Option<&[TokenId]> = None;
-    let mut previous_cumulative = 0_u64;
+    let mut previous_cumulative = Count::ZERO;
 
     for record in records {
         if record.prefix.len() != ngram_order {
@@ -502,16 +506,16 @@ fn decode_starts(
         }
         validate_prefix(record.prefix.as_slice(), token_count, "start record")?;
 
-        if let Some(previous_prefix) = previous_prefix
-            && previous_prefix >= record.prefix.as_slice()
+        if let Some(prev) = previous_prefix
+            && prev >= record.prefix.as_slice()
         {
             return Err("start records must be sorted by unique prefix".into());
         }
-        if record.cumulative <= previous_cumulative {
+        if record.cumulative.0 <= previous_cumulative.0 {
             return Err("start records must have strictly increasing cumulative counts".into());
         }
 
-        let count = record.cumulative - previous_cumulative;
+        let count = Count(record.cumulative.0 - previous_cumulative.0);
         starts.insert(record.prefix.clone(), count);
         previous_prefix = Some(record.prefix.as_slice());
         previous_cumulative = record.cumulative;
@@ -565,8 +569,8 @@ fn decode_model_section(
         }
         validate_prefix(record.prefix.as_slice(), token_count, "model record")?;
 
-        if let Some(previous_prefix) = previous_prefix
-            && previous_prefix >= record.prefix.as_slice()
+        if let Some(prev) = previous_prefix
+            && prev >= record.prefix.as_slice()
         {
             return Err(format!(
                 "model{} records must be sorted by unique prefix",
@@ -593,13 +597,13 @@ fn decode_model_section(
             .ok_or_else(|| format!("model{} edge range is invalid", section.order))?;
 
         let mut edges = HashMap::with_capacity(edge_slice.len());
-        let mut previous_cumulative = 0_u64;
+        let mut previous_cumulative = Count::ZERO;
         let mut previous_next: Option<TokenId> = None;
 
         for edge in edge_slice {
-            validate_token_id(edge.next, token_count, "model edge")?;
-            if let Some(previous_next) = previous_next
-                && previous_next >= edge.next
+            validate_token_id(edge.next.0, token_count, "model edge")?;
+            if let Some(prev_next) = previous_next
+                && prev_next >= edge.next
             {
                 return Err(format!(
                     "model{} edges must be sorted by unique token id",
@@ -607,7 +611,7 @@ fn decode_model_section(
                 )
                 .into());
             }
-            if edge.cumulative <= previous_cumulative {
+            if edge.cumulative.0 <= previous_cumulative.0 {
                 return Err(format!(
                     "model{} edges must have strictly increasing cumulative counts",
                     section.order
@@ -615,15 +619,15 @@ fn decode_model_section(
                 .into());
             }
 
-            edges.insert(edge.next, edge.cumulative - previous_cumulative);
+            edges.insert(edge.next, Count(edge.cumulative.0 - previous_cumulative.0));
             previous_cumulative = edge.cumulative;
             previous_next = Some(edge.next);
         }
 
-        if previous_cumulative != record.total {
+        if previous_cumulative.0 != record.total.0 {
             return Err(format!(
                 "model{} total mismatch: expected {}, got {}",
-                section.order, previous_cumulative, record.total
+                section.order, previous_cumulative.0, record.total.0
             )
             .into());
         }
@@ -679,7 +683,7 @@ fn validate_vocab_offsets(offsets: &[u64]) -> Result<(), DynError> {
 
 fn validate_prefix(prefix: &[TokenId], token_count: u32, context: &str) -> Result<(), DynError> {
     for token_id in prefix {
-        validate_token_id(*token_id, token_count, context)?;
+        validate_token_id(token_id.0, token_count, context)?;
     }
 
     Ok(())

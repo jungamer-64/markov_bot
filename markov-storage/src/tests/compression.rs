@@ -10,8 +10,8 @@ use crate::{FLAG_VOCAB_BLOB_LZ4_FLEX, FLAG_VOCAB_BLOB_RLE, FLAG_VOCAB_BLOB_ZSTD}
 #[test]
 fn auto_compresses_repeated_vocab_blob_when_helpful() -> Result<(), crate::StorageError> {
     let mut chain = sample_chain_with_order(7)?;
-    for _ in 0..40 {
-        chain.train_tokens(&["aaaaaaaaaaaaaaaaaaaaaaaa".to_owned()])?;
+    for i in 0..40 {
+        chain.train_tokens(&[format!("token_{:064}", i)])?;
     }
 
     let path =
@@ -26,8 +26,8 @@ fn auto_compresses_repeated_vocab_blob_when_helpful() -> Result<(), crate::Stora
     )?;
     let loaded = load_sample_file(&path, 7)?;
     ensure_eq(
-        &loaded.id_to_token,
-        &chain.id_to_token,
+        loaded.id_to_token(),
+        chain.id_to_token(),
         "auto-compressed file should round-trip vocabulary",
     )?;
     Ok(())
@@ -55,8 +55,8 @@ fn explicit_compression_modes_round_trip() -> Result<(), crate::StorageError> {
 
         let loaded = load_sample_file(&path, 6)?;
         ensure_eq(
-            &loaded.id_to_token,
-            &chain.id_to_token,
+            loaded.id_to_token(),
+            chain.id_to_token(),
             "compressed file should preserve vocabulary",
         )?;
     }
