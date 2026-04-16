@@ -27,8 +27,7 @@ const MAGIC: [u8; 8] = *b"MKV3BIN\0";
 const VERSION: u32 = 8;
 const FLAG_VOCAB_BLOB_RLE: u32 = 1 << 0;
 const FLAG_VOCAB_BLOB_ZSTD: u32 = 1 << 1;
-const FLAG_VOCAB_BLOB_LZ4_FLEX: u32 = 1 << 2;
-const SUPPORTED_FLAGS: u32 = FLAG_VOCAB_BLOB_RLE | FLAG_VOCAB_BLOB_ZSTD | FLAG_VOCAB_BLOB_LZ4_FLEX;
+const SUPPORTED_FLAGS: u32 = FLAG_VOCAB_BLOB_RLE | FLAG_VOCAB_BLOB_ZSTD;
 const TOKENIZER_VERSION: u32 = 1;
 const NORMALIZATION_FLAGS: u32 = 0;
 const CHECKSUM_PLACEHOLDER: u64 = 0;
@@ -37,7 +36,7 @@ const HEADER_SIZE: usize = 52;
 const DESCRIPTOR_SIZE: usize = 24;
 const CHECKSUM_SIZE: usize = std::mem::size_of::<u64>();
 const CHECKSUM_OFFSET: usize = HEADER_SIZE - CHECKSUM_SIZE;
-const SECTION_COUNT_BASE: u64 = 3;
+const SECTION_METADATA_COUNT: u64 = 3;
 const START_SECTION_HEADER_SIZE: u64 = 4;
 const MODEL_SECTION_HEADER_SIZE: u64 = 8;
 const EDGE_RECORD_SIZE: u64 = 12;
@@ -52,8 +51,6 @@ pub enum StorageError {
     Format(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("lz4 decompression failed: {0}")]
-    Lz4(#[from] lz4_flex::block::DecompressError),
     #[error("markov core error: {0}")]
     Core(#[from] markov_core::MarkovError),
     #[error("checksum mismatch: expected {expected:016x}, got {actual:016x}")]
@@ -85,7 +82,6 @@ pub enum StorageCompressionMode {
     Uncompressed,
     Rle,
     Zstd,
-    Lz4Flex,
 }
 
 impl StorageCompressionMode {
@@ -99,9 +95,8 @@ impl StorageCompressionMode {
             "none" | "off" | "uncompressed" => Ok(Self::Uncompressed),
             "rle" | "vocab_rle" | "vocab-blob-rle" => Ok(Self::Rle),
             "zstd" => Ok(Self::Zstd),
-            "lz4" | "lz4_flex" | "lz4-flex" => Ok(Self::Lz4Flex),
             _ => Err(format!(
-                "unsupported STORAGE_COMPRESSION value: {raw} (expected: auto|none|rle|zstd|lz4_flex)"
+                "unsupported STORAGE_COMPRESSION value: {raw} (expected: auto|none|rle|zstd)"
             )
             .into()),
         }
@@ -114,7 +109,6 @@ impl StorageCompressionMode {
             Self::Uncompressed => "none",
             Self::Rle => "rle",
             Self::Zstd => "zstd",
-            Self::Lz4Flex => "lz4_flex",
         }
     }
 }
@@ -208,7 +202,7 @@ pub fn decode_snapshot(bytes: &[u8]) -> Result<StorageSnapshot, DynError> {
 /// # Errors
 /// Returns `StorageError` if encoding or validation fails.
 pub fn encode_snapshot(
-    snapshot: &StorageSnapshot,
+    snapshot: StorageSnapshot,
     compression_mode: StorageCompressionMode,
 ) -> Result<Vec<u8>, DynError> {
     let chain = snapshot_to_chain(snapshot)?;
@@ -219,22 +213,22 @@ pub fn encode_snapshot(
 ///
 /// # Errors
 /// Returns `StorageError` if the snapshot is invalid or conversion fails.
-pub fn snapshot_to_chain(snapshot: &StorageSnapshot) -> Result<MarkovChain, DynError> {
-    validate_snapshot(snapshot)?;
+pub fn snapshot_to_chain(snapshot: StorageSnapshot) -> Result<MarkovChain, DynError> {
+    validate_snapshot(&snapshot)?;
 
     let order = NgramOrder::new(snapshot.ngram_order())?;
     let token_to_id = build_token_index(snapshot.tokens.as_slice())?;
     let mut models = (0..snapshot.ngram_order())
         .map(|_| HashMap::new())
         .collect::<Vec<_>>();
-    for model in &snapshot.models {
+    for model in snapshot.models {
         let mut prefixes = HashMap::new();
-        for entry in &model.entries {
+        for entry in model.entries {
             let mut edges = HashMap::new();
-            for edge in &entry.edges {
+            for edge in entry.edges {
                 edges.insert(markov_core::TokenId::new(edge.next), markov_core::Count::new(edge.count));
             }
-            prefixes.insert(markov_core::Prefix::new(entry.prefix.iter().map(|&id| markov_core::TokenId::new(id)).collect()), edges);
+            prefixes.insert(markov_core::Prefix::new(entry.prefix.into_iter().map(markov_core::TokenId::new).collect()), edges);
         }
         let slot = models
             .get_mut(model.order - 1)
@@ -244,14 +238,14 @@ pub fn snapshot_to_chain(snapshot: &StorageSnapshot) -> Result<MarkovChain, DynE
 
     let starts = snapshot
         .starts
-        .iter()
-        .map(|entry| (markov_core::Prefix::new(entry.prefix.iter().map(|&id| markov_core::TokenId::new(id)).collect()), markov_core::Count::new(entry.count)))
+        .into_iter()
+        .map(|entry| (markov_core::Prefix::new(entry.prefix.into_iter().map(markov_core::TokenId::new).collect()), markov_core::Count::new(entry.count)))
         .collect::<HashMap<_, _>>();
 
     Ok(MarkovChain::from_parts(
         order,
         token_to_id,
-        snapshot.tokens.clone(),
+        snapshot.tokens,
         models,
         starts,
     )?)
@@ -268,7 +262,7 @@ pub fn chain_to_snapshot(
     validate_special_tokens(chain.id_to_token())?;
     validate_token_index(chain)?;
 
-    if chain.models().len() != chain.order().as_usize() {
+    if chain.models().len() != chain.order().as_usize()? {
         return Err("model count does not match ngram order".into());
     }
 
@@ -310,7 +304,7 @@ pub fn chain_to_snapshot(
         schema_version: SNAPSHOT_SCHEMA_VERSION,
         source: SnapshotSource {
             storage_version: VERSION,
-            ngram_order: chain.order().as_usize(),
+            ngram_order: chain.order().as_usize()?,
             compression: compression_mode,
         },
         tokens: chain.id_to_token().to_vec(),
@@ -453,7 +447,6 @@ fn compression_mode_from_flags(flags: u32) -> Result<StorageCompressionMode, Dyn
         0 => Ok(StorageCompressionMode::Uncompressed),
         FLAG_VOCAB_BLOB_RLE => Ok(StorageCompressionMode::Rle),
         FLAG_VOCAB_BLOB_ZSTD => Ok(StorageCompressionMode::Zstd),
-        FLAG_VOCAB_BLOB_LZ4_FLEX => Ok(StorageCompressionMode::Lz4Flex),
         _ => Err("unsupported vocab blob compression flags".into()),
     }
 }
@@ -509,7 +502,7 @@ fn validate_token_id(token_id: u32, token_count: u32, context: &str) -> Result<(
 
 fn descriptor_count_for_ngram_order(ngram_order: usize) -> Result<u64, DynError> {
     let ngram_order = u64_from_usize(ngram_order, "ngram order")?;
-    SECTION_COUNT_BASE
+    SECTION_METADATA_COUNT
         .checked_add(ngram_order)
         .ok_or_else(|| "section count overflow".into())
 }

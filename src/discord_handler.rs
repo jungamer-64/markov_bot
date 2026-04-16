@@ -63,8 +63,16 @@ impl DiscordHandler {
         let actor = HandlerActor::new(config, current_user_id, state, rx);
         tokio::spawn(actor.run());
 
+        let tokenizer = match Tokenizer::new() {
+            Ok(t) => t,
+            Err(error) => {
+                eprintln!("Warning: Failed to initialize Lindera (Japanese tokenizer), falling back to unicode-segmentation: {error}");
+                Tokenizer::with_fallback()
+            }
+        };
+
         Ok(Self {
-            tokenizer: Tokenizer::new()?,
+            tokenizer,
             tx,
         })
     }
@@ -90,9 +98,9 @@ impl DiscordHandler {
             author_is_bot,
             tokens,
             reply_tx,
-        }).await.map_err(|_| anyhow::anyhow!("handler actor is dead"))?;
+        }).await.map_err(|_error| anyhow::anyhow!("handler actor is dead"))?;
 
-        let reply_text = reply_rx.await.map_err(|_| anyhow::anyhow!("reply channel closed"))??;
+        let reply_text = reply_rx.await.map_err(|_error| anyhow::anyhow!("reply channel closed"))??;
 
         if let Some(text) = reply_text {
             let _ = http.create_message(channel_id).content(&text).await?;
@@ -110,7 +118,7 @@ struct HandlerActor {
 }
 
 impl HandlerActor {
-    fn new(
+    const fn new(
         config: BotConfig,
         current_user_id: Id<UserMarker>,
         state: RuntimeState,
@@ -175,7 +183,7 @@ impl HandlerActor {
         let cooldown = Duration::from_secs(self.config.reply_cooldown_secs());
         if can_reply(self.state.last_reply_at, cooldown) {
             self.state.last_reply_at = Some(Instant::now());
-            Ok(Some(self.build_reply_text()))
+            Ok(Some(self.build_reply_text()?))
         } else {
             Ok(None)
         }
@@ -191,26 +199,18 @@ impl HandlerActor {
             && !should_ignore_author(author_is_bot, author_id, self.current_user_id)
     }
 
-    fn build_reply_text(&self) -> String {
+    fn build_reply_text(&self) -> Result<String, DynError> {
         let mut rng = rng();
         let options = GenerationOptions::new(
             self.config.max_words(),
             self.config.temperature(),
             self.config.min_words_before_eos(),
-        ).unwrap_or_else(|_| {
-            // This case should be unreachable if BotConfig is valid, but we provide a fallback.
-            let fallback_options = GenerationOptions::new(
-                markov_core::MaxWords::DEFAULT,
-                markov_core::Temperature::DEFAULT,
-                markov_core::MinWordsBeforeEos::DEFAULT,
-            ).expect("default options must be valid");
-            fallback_options
-        });
+        ).map_err(|e| anyhow::anyhow!("invalid generation options: {e}"))?;
 
-        self.state
+        Ok(self.state
             .chain
             .generate_sentence_with_options(&mut rng, options)
-            .unwrap_or_else(|| GENERATION_FALLBACK.to_owned())
+            .unwrap_or_else(|| GENERATION_FALLBACK.to_owned()))
     }
 }
 
@@ -228,7 +228,7 @@ fn can_reply(last_reply_at: Option<Instant>, cooldown: Duration) -> bool {
 
 async fn load_chain(path: &Path, expected_ngram_order: NgramOrder) -> Result<MarkovChain, DynError> {
     if !path.exists() {
-        return MarkovChain::new(expected_ngram_order).map_err(|error| error.into());
+        return MarkovChain::new(expected_ngram_order).map_err(Into::into);
     }
 
     let bytes = fs::read(path).await?;

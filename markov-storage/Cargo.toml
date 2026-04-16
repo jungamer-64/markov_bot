@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-lz4_flex = "0.13.0"
 markov-core = { path = "../markov-core" }
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.17"

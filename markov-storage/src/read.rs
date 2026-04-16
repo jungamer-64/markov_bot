@@ -1,10 +1,8 @@
 use std::{collections::HashMap, str};
 
-use lz4_flex::block::decompress_into as lz4_decompress_into;
-
 use crate::StorageError;
 use super::{
-    DynError, EDGE_RECORD_SIZE, FLAG_VOCAB_BLOB_LZ4_FLEX, FLAG_VOCAB_BLOB_RLE,
+    DynError, EDGE_RECORD_SIZE, FLAG_VOCAB_BLOB_RLE,
     FLAG_VOCAB_BLOB_ZSTD, HEADER_SIZE, MAGIC, MODEL_SECTION_HEADER_SIZE, NORMALIZATION_FLAGS,
     START_SECTION_HEADER_SIZE, TOKENIZER_VERSION, VERSION, aligned_metadata_end, chain_to_snapshot,
     checked_add, compression_mode_from_flags, compute_checksum, descriptor_count_for_ngram_order,
@@ -20,7 +18,7 @@ use super::types::{
 
 type RebuiltModels = Vec<HashMap<Prefix, HashMap<TokenId, Count>>>;
 
-const REPEAT_BASE: u8 = 128;
+const REPEAT_CONTROL_THRESHOLD: u8 = 128;
 const REPEAT_CHUNK_MIN: usize = 3;
 const REPEAT_CHUNK_MAX: usize = 130;
 const MAX_RLE_EXPANSION_PER_ENCODED_BYTE: usize = REPEAT_CHUNK_MAX / 2;
@@ -39,7 +37,7 @@ pub(super) fn decode_chain(
         });
     }
 
-    let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order.as_usize())?;
+    let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order.as_usize()?)?;
     if header.section_count != expected_section_count {
         return Err(StorageError::Format(format!(
             "section count mismatch: expected {expected_section_count}, got {}",
@@ -66,7 +64,6 @@ pub(super) fn decode_chain(
     let table = build_section_table(bytes, &header)?;
     let sections = parse_storage(bytes, &header, &table, actual_ngram_order)?;
 
-
     rebuild_chain(&sections)
 }
 
@@ -75,7 +72,7 @@ pub(super) fn decode_snapshot(bytes: &[u8]) -> Result<super::StorageSnapshot, Dy
     let actual_ngram_order = NgramOrder::new(usize::try_from(header.ngram_order)
         .map_err(|_error| StorageError::Format("header ngram_order exceeds usize range".into()))?)?;
 
-    let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order.as_usize())?;
+    let expected_section_count = descriptor_count_for_ngram_order(actual_ngram_order.as_usize()?)?;
     if header.section_count != expected_section_count {
         return Err(StorageError::Format(format!(
             "section count mismatch: expected {expected_section_count}, got {}",
@@ -310,9 +307,9 @@ fn parse_storage(
     )?;
 
     let starts_entry = table.unique_entry(SectionKind::Starts)?;
-    let starts = parse_starts_section(section_bytes(bytes, starts_entry)?, ngram_order.as_usize())?;
+    let starts = parse_starts_section(section_bytes(bytes, starts_entry)?, ngram_order.as_usize()?)?;
 
-    let mut models = Vec::with_capacity(ngram_order.as_usize());
+    let mut models = Vec::with_capacity(ngram_order.as_usize()?);
     for entry in table.model_entries() {
         let order = usize_from_u32(entry.descriptor.flags, "model section order")?;
         models.push(parse_model_section(section_bytes(bytes, entry)?, order)?);
@@ -443,7 +440,7 @@ fn read_prefix(bytes: &[u8], cursor: &mut usize, order: usize) -> Result<Prefix,
 }
 
 fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
-    if sections.models.len() != sections.ngram_order.as_usize() {
+    if sections.models.len() != sections.ngram_order.as_usize()? {
         return Err("storage model section count does not match ngram order".into());
     }
 
@@ -453,8 +450,6 @@ fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
     )?;
     validate_special_tokens(id_to_token.as_slice())?;
 
-    let token_count =
-        u32::try_from(id_to_token.len()).map_err(|_error| "token count exceeds u32 range")?;
     let token_to_id = id_to_token
         .iter()
         .enumerate()
@@ -465,14 +460,17 @@ fn rebuild_chain(sections: &StorageSections) -> Result<MarkovChain, DynError> {
         })
         .collect::<Result<HashMap<_, _>, DynError>>()?;
 
+    let token_count =
+        u32::try_from(id_to_token.len()).map_err(|_error| "token count exceeds u32 range")?;
+
     let starts = decode_starts(
         sections.starts.as_slice(),
-        sections.ngram_order.as_usize(),
+        sections.ngram_order.as_usize()?,
         token_count,
     )?;
     let models = decode_models(
         sections.models.as_slice(),
-        sections.ngram_order.as_usize(),
+        sections.ngram_order.as_usize()?,
         token_count,
     )?;
 
@@ -698,8 +696,6 @@ fn decode_vocab_blob(
         decode_vocab_blob_rle(vocab_blob_bytes, expected_size)
     } else if compression_flags == FLAG_VOCAB_BLOB_ZSTD {
         decode_vocab_blob_zstd(vocab_blob_bytes, expected_size)
-    } else if compression_flags == FLAG_VOCAB_BLOB_LZ4_FLEX {
-        decode_vocab_blob_lz4_flex(vocab_blob_bytes, expected_size)
     } else if compression_flags == 0 {
         decode_vocab_blob_plain(vocab_blob_bytes, expected_size)
     } else {
@@ -737,7 +733,7 @@ fn decode_vocab_blob_rle(
             .ok_or("compressed vocab blob is truncated")?;
         cursor += 1;
 
-        if control < REPEAT_BASE {
+        if control < REPEAT_CONTROL_THRESHOLD {
             decode_literal_chunk(
                 vocab_blob_bytes,
                 control,
@@ -770,19 +766,6 @@ fn decode_vocab_blob_zstd(
     let decoded = zstd::bulk::decompress(vocab_blob_bytes, expected_size)?;
     if decoded.len() != expected_size {
         return Err("zstd vocab blob size does not match expected decoded size".into());
-    }
-
-    Ok(decoded)
-}
-
-fn decode_vocab_blob_lz4_flex(
-    vocab_blob_bytes: &[u8],
-    expected_size: usize,
-) -> Result<Vec<u8>, DynError> {
-    let mut decoded = vec![0; expected_size];
-    let written = lz4_decompress_into(vocab_blob_bytes, decoded.as_mut_slice())?;
-    if written != expected_size {
-        return Err("lz4_flex vocab blob size does not match expected decoded size".into());
     }
 
     Ok(decoded)
@@ -833,7 +816,7 @@ fn decode_repeat_chunk(
     decoded: &mut Vec<u8>,
     expected_size: usize,
 ) -> Result<(), DynError> {
-    let repeat_len = usize::from(control - REPEAT_BASE) + REPEAT_CHUNK_MIN;
+    let repeat_len = usize::from(control - REPEAT_CONTROL_THRESHOLD) + REPEAT_CHUNK_MIN;
     let value = *source
         .get(*cursor)
         .ok_or("compressed vocab blob repeat chunk is truncated")?;

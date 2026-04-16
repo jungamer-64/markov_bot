@@ -3,11 +3,11 @@ use std::fs;
 use markov_core::NgramOrder;
 
 use super::super::StorageCompressionMode;
-use super::helpers::{
+use super::test_support::{
     FLAGS_OFFSET, ensure_eq, ensure_ne, load_sample_file, sample_chain_with_order,
     write_sample_file_with_mode,
 };
-use crate::{FLAG_VOCAB_BLOB_LZ4_FLEX, FLAG_VOCAB_BLOB_RLE, FLAG_VOCAB_BLOB_ZSTD};
+use crate::{FLAG_VOCAB_BLOB_RLE, FLAG_VOCAB_BLOB_ZSTD};
 
 #[test]
 fn auto_compresses_repeated_vocab_blob_when_helpful() -> Result<(), crate::StorageError> {
@@ -20,7 +20,7 @@ fn auto_compresses_repeated_vocab_blob_when_helpful() -> Result<(), crate::Stora
     let path =
         write_sample_file_with_mode("compression_auto", &chain, StorageCompressionMode::Auto)?;
     let bytes = fs::read(&path)?;
-    let flags = super::helpers::read_u32_at(bytes.as_slice(), FLAGS_OFFSET)?;
+    let flags = super::test_support::read_u32_at(bytes.as_slice(), FLAGS_OFFSET)?;
 
     ensure_ne(
         &flags,
@@ -45,11 +45,10 @@ fn explicit_compression_modes_round_trip() -> Result<(), crate::StorageError> {
         (StorageCompressionMode::Uncompressed, 0),
         (StorageCompressionMode::Rle, FLAG_VOCAB_BLOB_RLE),
         (StorageCompressionMode::Zstd, FLAG_VOCAB_BLOB_ZSTD),
-        (StorageCompressionMode::Lz4Flex, FLAG_VOCAB_BLOB_LZ4_FLEX),
     ] {
         let path = write_sample_file_with_mode("compression_modes", &chain, mode)?;
         let bytes = fs::read(&path)?;
-        let flags = super::helpers::read_u32_at(bytes.as_slice(), FLAGS_OFFSET)?;
+        let flags = super::test_support::read_u32_at(bytes.as_slice(), FLAGS_OFFSET)?;
 
         ensure_eq(
             &flags,

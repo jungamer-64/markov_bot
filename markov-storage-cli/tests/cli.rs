@@ -13,7 +13,7 @@ fn inspect_prints_summary() -> Result<()> {
     let input = temp_dir.path().join("input.mkv3");
     fs::write(
         &input,
-        encode_snapshot(&sample_snapshot(), StorageCompressionMode::Uncompressed)?,
+        encode_snapshot(sample_snapshot(), StorageCompressionMode::Uncompressed)?,
     )?;
 
     let output = run_cli(&["inspect", "--input", input.to_string_lossy().as_ref()])?;
@@ -35,7 +35,7 @@ fn export_then_import_round_trips_snapshot() -> Result<()> {
 
     fs::write(
         &input,
-        encode_snapshot(&expected, StorageCompressionMode::Uncompressed)?,
+        encode_snapshot(expected.clone(), StorageCompressionMode::Uncompressed)?,
     )?;
 
     run_cli(&[
@@ -67,7 +67,7 @@ fn rejects_same_input_and_output_path() -> Result<()> {
     let input = temp_dir.path().join("input.mkv3");
     fs::write(
         &input,
-        encode_snapshot(&sample_snapshot(), StorageCompressionMode::Uncompressed)?,
+        encode_snapshot(sample_snapshot(), StorageCompressionMode::Uncompressed)?,
     )?;
 
     let output = Command::new(binary_path())

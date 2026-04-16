@@ -25,7 +25,7 @@ impl NgramOrder {
             return Err(MarkovError::InvalidNgramOrder(value));
         }
 
-        let u32_val = u32::try_from(value).map_err(|_| MarkovError::InvalidNgramOrder(value))?;
+        let u32_val = u32::try_from(value).map_err(|_error| MarkovError::InvalidNgramOrder(value))?;
         Ok(Self(u32_val))
     }
 
@@ -34,8 +34,9 @@ impl NgramOrder {
         self.0
     }
 
-    #[must_use]
-    pub const fn as_usize(self) -> usize {
-        self.0 as usize
+    /// # Errors
+    /// Returns `MarkovError::Boundary` if `u32` to `usize` conversion fails (should be impossible on 32/64-bit).
+    pub fn as_usize(self) -> Result<usize, MarkovError> {
+        usize::try_from(self.0).map_err(|_error| MarkovError::Boundary("u32 to usize conversion failed".into()))
     }
 }

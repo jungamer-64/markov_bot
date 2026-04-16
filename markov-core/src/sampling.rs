@@ -25,7 +25,7 @@ pub(crate) fn choose_weighted_prefix<R: Rng + ?Sized>(
         .collect::<Vec<_>>();
 
     entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
-    choose_weighted_key(entries.as_slice(), rng, temperature)
+    choose_weighted_key(entries, rng, temperature)
 }
 
 pub(crate) fn choose_weighted_token<R: Rng + ?Sized>(
@@ -46,11 +46,11 @@ pub(crate) fn choose_weighted_token<R: Rng + ?Sized>(
         .collect::<Vec<_>>();
 
     entries.sort_unstable_by_key(|(token, _)| *token);
-    choose_weighted_key(entries.as_slice(), rng, temperature)
+    choose_weighted_key(entries, rng, temperature)
 }
 
-fn choose_weighted_key<K: Clone, R: Rng + ?Sized>(
-    entries: &[(K, Count)],
+fn choose_weighted_key<K, R: Rng + ?Sized>(
+    entries: Vec<(K, Count)>,
     rng: &mut R,
     temperature: Temperature,
 ) -> Option<K> {
@@ -61,44 +61,44 @@ fn choose_weighted_key<K: Clone, R: Rng + ?Sized>(
     choose_weighted_key_with_temperature(entries, rng, temperature)
 }
 
-fn choose_weighted_key_default<K: Clone, R: Rng + ?Sized>(
-    entries: &[(K, Count)],
+fn choose_weighted_key_default<K, R: Rng + ?Sized>(
+    entries: Vec<(K, Count)>,
     rng: &mut R,
 ) -> Option<K> {
     let weighted_entries = entries
-        .iter()
+        .into_iter()
         .filter_map(|(key, count)| {
-            default_sampling_weight(*count).map(|weight| (key.clone(), weight))
+            default_sampling_weight(count).map(|weight| (key, weight))
         })
         .collect::<Vec<_>>();
 
-    let alias_table = AliasTable::build(weighted_entries.as_slice())?;
+    let alias_table = AliasTable::build(weighted_entries)?;
     alias_table.sample(rng)
 }
 
-fn choose_weighted_key_with_temperature<K: Clone, R: Rng + ?Sized>(
-    entries: &[(K, Count)],
+fn choose_weighted_key_with_temperature<K, R: Rng + ?Sized>(
+    entries: Vec<(K, Count)>,
     rng: &mut R,
     temperature: Temperature,
 ) -> Option<K> {
     let weighted_entries = build_temperature_weights(entries, temperature)?;
-    let alias_table = AliasTable::build(weighted_entries.as_slice())?;
+    let alias_table = AliasTable::build(weighted_entries)?;
     alias_table.sample(rng)
 }
 
-fn build_temperature_weights<K: Clone>(
-    entries: &[(K, Count)],
+fn build_temperature_weights<K>(
+    entries: Vec<(K, Count)>,
     temperature: Temperature,
 ) -> Option<Vec<(K, f64)>> {
     let exponent = 1.0_f64 / temperature.get();
     let mut weighted_entries = Vec::with_capacity(entries.len());
 
     for (key, count) in entries {
-        let Some(weight) = scaled_temperature_weight(*count, exponent) else {
+        let Some(weight) = scaled_temperature_weight(count, exponent) else {
             continue;
         };
 
-        weighted_entries.push((key.clone(), weight));
+        weighted_entries.push((key, weight));
     }
 
     (!weighted_entries.is_empty()).then_some(weighted_entries)
@@ -118,8 +118,8 @@ fn default_sampling_weight(count: Count) -> Option<f64> {
     Some(f64::from(bounded))
 }
 
-impl<K: Clone> AliasTable<K> {
-    fn build(entries: &[(K, f64)]) -> Option<Self> {
+impl<K> AliasTable<K> {
+    fn build(entries: Vec<(K, f64)>) -> Option<Self> {
         let (keys, mut scaled) = normalized_weights(entries)?;
 
         let table_len = keys.len();
@@ -145,16 +145,17 @@ impl<K: Clone> AliasTable<K> {
         })
     }
 
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Option<K> {
+    fn sample<R: Rng + ?Sized>(self, rng: &mut R) -> Option<K> {
         if self.keys.is_empty() {
             return None;
         }
 
-        if self.keys.len() == 1 {
-            return self.keys.first().cloned();
+        let keys_len = self.keys.len();
+        if keys_len == 1 {
+            return self.keys.into_iter().next();
         }
 
-        let column = rng.random_range(0..self.keys.len());
+        let column = rng.random_range(0..keys_len);
         let threshold = rng.random_range(0.0_f64..1.0_f64);
         let probability = *self.probabilities.get(column)?;
         let picked = if threshold < probability {
@@ -163,11 +164,16 @@ impl<K: Clone> AliasTable<K> {
             *self.aliases.get(column)?
         };
 
-        self.keys.get(picked).cloned()
+        let mut keys = self.keys;
+        if picked < keys.len() {
+            Some(keys.swap_remove(picked))
+        } else {
+            None
+        }
     }
 }
 
-fn normalized_weights<K: Clone>(entries: &[(K, f64)]) -> Option<(Vec<K>, Vec<f64>)> {
+fn normalized_weights<K>(entries: Vec<(K, f64)>) -> Option<(Vec<K>, Vec<f64>)> {
     let (keys, mut weights, total_weight) = collect_positive_weights(entries);
     if keys.is_empty() || total_weight <= 0.0 {
         return None;
@@ -182,19 +188,19 @@ fn normalized_weights<K: Clone>(entries: &[(K, f64)]) -> Option<(Vec<K>, Vec<f64
     Some((keys, weights))
 }
 
-fn collect_positive_weights<K: Clone>(entries: &[(K, f64)]) -> (Vec<K>, Vec<f64>, f64) {
+fn collect_positive_weights<K>(entries: Vec<(K, f64)>) -> (Vec<K>, Vec<f64>, f64) {
     let mut keys = Vec::with_capacity(entries.len());
     let mut weights = Vec::with_capacity(entries.len());
     let mut total_weight = 0.0_f64;
 
     for (key, weight) in entries {
-        if !weight.is_finite() || *weight <= 0.0 {
+        if !weight.is_finite() || weight <= 0.0 {
             continue;
         }
 
-        keys.push(key.clone());
-        weights.push(*weight);
-        total_weight += *weight;
+        keys.push(key);
+        weights.push(weight);
+        total_weight += weight;
     }
 
     (keys, weights, total_weight)

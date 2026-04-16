@@ -8,21 +8,21 @@ use crate::config::DynError;
 
 #[derive(Clone)]
 pub(crate) enum Tokenizer {
-    Lindera(LinderaTokenizer),
+    Lindera(Box<LinderaTokenizer>),
     Fallback,
 }
 
 impl Tokenizer {
     /// # Errors
-    /// Returns `DynError` if the dictionary fails to load.
+    /// Returns `DynError` if Lindera tokenizer initialization fails.
     pub(crate) fn new() -> Result<Self, DynError> {
-        match build_lindera_tokenizer() {
-            Ok(tokenizer) => Ok(Self::Lindera(tokenizer)),
-            Err(error) => {
-                eprintln!("Warning: Failed to initialize Lindera (Japanese tokenizer), falling back to unicode-segmentation: {error}");
-                Ok(Self::Fallback)
-            }
-        }
+        let tokenizer = build_lindera_tokenizer()?;
+        Ok(Self::Lindera(Box::new(tokenizer)))
+    }
+
+    #[must_use]
+    pub(crate) fn with_fallback() -> Self {
+        Self::Fallback
     }
 
     pub(crate) fn tokenize(&self, text: &str) -> Vec<String> {

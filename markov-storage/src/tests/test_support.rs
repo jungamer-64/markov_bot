@@ -4,7 +4,7 @@ use markov_core::{MarkovChain, NgramOrder};
 use tempfile::{Builder, TempPath};
 
 use crate::{
-    CHECKSUM_OFFSET, DESCRIPTOR_SIZE, HEADER_SIZE, SECTION_COUNT_BASE, StorageCompressionMode,
+    CHECKSUM_OFFSET, DESCRIPTOR_SIZE, HEADER_SIZE, SECTION_METADATA_COUNT, StorageCompressionMode,
     StorageError, compute_checksum, decode_chain, descriptor_count_for_ngram_order,
     encode_chain,
 };
@@ -101,7 +101,7 @@ pub(super) fn sample_chain_with_order(ngram_order: NgramOrder) -> Result<MarkovC
         )?;
     }
     ensure(
-        chain.models().len() == ngram_order.as_usize(),
+        chain.models().len() == ngram_order.as_usize()?,
         "model count should match ngram order",
     )?;
     Ok(chain)
@@ -116,12 +116,12 @@ pub(super) fn temp_file_path(prefix: &str) -> Result<TempPath, StorageError> {
 }
 
 pub(super) fn descriptor(bytes: &[u8], index: usize) -> Result<DescriptorView, StorageError> {
-    let base = descriptor_base(index)?;
+    let offset = descriptor_start_offset(index)?;
     Ok(DescriptorView {
-        kind: read_u32_at(bytes, base)?,
-        flags: read_u32_at(bytes, base + 4)?,
-        offset: read_u64_at(bytes, base + 8)?,
-        size: read_u64_at(bytes, base + 16)?,
+        kind: read_u32_at(bytes, offset)?,
+        flags: read_u32_at(bytes, offset + 4)?,
+        offset: read_u64_at(bytes, offset + 8)?,
+        size: read_u64_at(bytes, offset + 16)?,
     })
 }
 
@@ -151,14 +151,14 @@ pub(super) fn section_body_offset(bytes: &[u8], index: usize) -> Result<usize, S
 }
 
 pub(super) fn descriptor_flags_offset(index: usize) -> Result<usize, StorageError> {
-    let base = descriptor_base(index)?;
-    base.checked_add(4)
+    let offset = descriptor_start_offset(index)?;
+    offset.checked_add(4)
         .ok_or_else(|| "descriptor flags offset overflow".into())
 }
 
 pub(super) fn descriptor_size_offset(index: usize) -> Result<usize, StorageError> {
-    let base = descriptor_base(index)?;
-    base.checked_add(16)
+    let offset = descriptor_start_offset(index)?;
+    offset.checked_add(16)
         .ok_or_else(|| "descriptor size offset overflow".into())
 }
 
@@ -217,20 +217,20 @@ pub(super) fn write_u64_at(
     Ok(())
 }
 
-fn descriptor_base(index: usize) -> Result<usize, StorageError> {
+fn descriptor_start_offset(index: usize) -> Result<usize, StorageError> {
     HEADER_SIZE
         .checked_add(
             index
                 .checked_mul(DESCRIPTOR_SIZE)
-                .ok_or_else(|| "descriptor base overflow".to_owned())?,
+                .ok_or_else(|| "descriptor start offset overflow".to_owned())?,
         )
-        .ok_or_else(|| "descriptor base overflow".into())
+        .ok_or_else(|| "descriptor start offset overflow".into())
 }
 
 #[test]
 fn section_count_formula_stays_dynamic() -> Result<(), StorageError> {
     ensure(
-        expected_section_count(7)? == SECTION_COUNT_BASE + 7,
+        expected_section_count(7)? == SECTION_METADATA_COUNT + 7,
         "section count should be 3 + ngram_order",
     )
 }

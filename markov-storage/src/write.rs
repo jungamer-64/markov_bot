@@ -13,7 +13,7 @@ use super::types::{
 };
 
 const VOCAB_COMPRESSION_THRESHOLD: usize = 128;
-const REPEAT_BASE: u8 = 128;
+const REPEAT_CONTROL_THRESHOLD: u8 = 128;
 const REPEAT_CHUNK_MIN: usize = 3;
 const REPEAT_CHUNK_MAX: usize = 130;
 
@@ -27,8 +27,8 @@ pub(super) fn compile_chain(
     }
 
     let starts = compile_starts(chain)?;
-    let mut models = Vec::with_capacity(chain.order().as_usize());
-    for order_val in (1..=chain.order().as_usize()).rev() {
+    let mut models = Vec::with_capacity(chain.order().as_usize()?);
+    for order_val in (1..=chain.order().as_usize()?).rev() {
         let model = chain
             .models()
             .get(order_val - 1)
@@ -104,7 +104,7 @@ fn calculate_file_size(
     add_section(u64_from_usize(vocab_blob_len, "vocab blob section")?)?;
     add_section(calculate_starts_section_size(
         sections.starts.as_slice(),
-        sections.ngram_order.as_usize(),
+        sections.ngram_order.as_usize()?,
     )?)?;
 
     for model in &sections.models {
@@ -204,10 +204,10 @@ fn compile_starts(chain: &MarkovChain) -> Result<Vec<StartRecord>, DynError> {
 
     let mut cumulative = 0_u64;
     for prefix in prefixes {
-        if prefix.len() != chain.order().as_usize() {
+        if prefix.len() != chain.order().as_usize()? {
             return Err(format!(
                 "start record prefix length mismatch: expected {}, got {}",
-                chain.order().as_usize(),
+                chain.order().as_usize()?,
                 prefix.len()
             )
             .into());
@@ -245,7 +245,7 @@ fn write_header(
     write_u32(target, flags);
     write_u32(target, super::TOKENIZER_VERSION);
     write_u32(target, super::NORMALIZATION_FLAGS);
-    write_u32(target, u32_from_usize(sections.ngram_order.as_usize(), "ngram order")?);
+    write_u32(target, u32_from_usize(sections.ngram_order.as_usize()?, "ngram order")?);
     write_u64(target, section_count);
     write_u64(target, file_size);
     write_u64(target, super::CHECKSUM_PLACEHOLDER);
@@ -291,7 +291,7 @@ fn write_descriptors(
     add_descriptor(
         SectionKind::Starts,
         0,
-        calculate_starts_section_size(sections.starts.as_slice(), sections.ngram_order.as_usize())?,
+        calculate_starts_section_size(sections.starts.as_slice(), sections.ngram_order.as_usize()?)?,
     )?;
 
     for model in &sections.models {
@@ -324,7 +324,7 @@ fn write_sections(
     write_starts_section(
         target,
         sections.starts.as_slice(),
-        sections.ngram_order.as_usize(),
+        sections.ngram_order.as_usize()?,
         descriptors.get(2).ok_or("missing starts descriptor")?,
     )?;
 
@@ -459,10 +459,6 @@ fn encode_vocab_blob(
             let encoded = zstd::bulk::compress(blob, 3)?;
             Ok((encoded, super::FLAG_VOCAB_BLOB_ZSTD))
         }
-        StorageCompressionMode::Lz4Flex => {
-            let encoded = lz4_flex::block::compress(blob);
-            Ok((encoded, super::FLAG_VOCAB_BLOB_LZ4_FLEX))
-        }
     }
 }
 
@@ -474,7 +470,7 @@ fn encode_vocab_blob_rle(blob: &[u8]) -> Result<Vec<u8>, DynError> {
         let repeat_len = count_repeats(blob.get(cursor..).ok_or("RLE: blob range is invalid")?);
         if repeat_len >= REPEAT_CHUNK_MIN {
             let chunk_len = repeat_len.min(REPEAT_CHUNK_MAX);
-            let control = REPEAT_BASE
+            let control = REPEAT_CONTROL_THRESHOLD
                 .checked_add(u8::try_from(chunk_len - REPEAT_CHUNK_MIN).map_err(|_error| "RLE: chunk_len overflow")?)
                 .ok_or("RLE: control byte overflow")?;
             encoded.push(control);
@@ -486,7 +482,7 @@ fn encode_vocab_blob_rle(blob: &[u8]) -> Result<Vec<u8>, DynError> {
             cursor += chunk_len;
         } else {
             let literal_len = count_literals(blob.get(cursor..).ok_or("RLE: literal blob range is invalid")?);
-            let chunk_len = literal_len.min(usize::from(REPEAT_BASE));
+            let chunk_len = literal_len.min(usize::from(REPEAT_CONTROL_THRESHOLD));
             encoded.push(u8::try_from(chunk_len - 1).map_err(|_error| "RLE: literal chunk_len underflow")?);
             encoded.extend_from_slice(
                 blob.get(cursor..cursor + chunk_len)

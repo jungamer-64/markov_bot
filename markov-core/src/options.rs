@@ -45,7 +45,7 @@ impl MaxWords {
 
     /// # Errors
     /// Returns `MarkovError::InvalidMaxWords` if the value is 0.
-    pub fn new(value: usize) -> Result<Self, MarkovError> {
+    pub const fn new(value: usize) -> Result<Self, MarkovError> {
         if value == 0 {
             return Err(MarkovError::InvalidMaxWords(value));
         }
@@ -85,7 +85,7 @@ pub struct GenerationOptions {
 impl GenerationOptions {
     /// # Errors
     /// Returns `MarkovError::InvalidEosThreshold` if `min_words_before_eos` > `max_words`.
-    pub fn new(
+    pub const fn new(
         max_words: MaxWords,
         temperature: Temperature,
         min_words_before_eos: MinWordsBeforeEos,

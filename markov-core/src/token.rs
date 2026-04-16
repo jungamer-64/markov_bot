@@ -92,17 +92,17 @@ impl From<Vec<TokenId>> for Prefix {
 
 impl Prefix {
     #[must_use]
-    pub fn new(tokens: Vec<TokenId>) -> Self {
+    pub const fn new(tokens: Vec<TokenId>) -> Self {
         Self(tokens)
     }
 
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.0.len()
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 

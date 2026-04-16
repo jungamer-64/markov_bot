@@ -26,21 +26,25 @@ impl MarkovChain {
         token_to_id.insert(EOS_TOKEN.to_owned(), EOS_ID);
 
         let mut id_to_token = vec![String::new(); 2];
+        let bos_idx = usize::try_from(BOS_ID.get())
+            .map_err(|_err| MarkovError::Boundary("BOS_ID conversion failed".into()))?;
         let bos_slot = id_to_token
-            .get_mut(BOS_ID.get() as usize)
+            .get_mut(bos_idx)
             .ok_or_else(|| MarkovError::Boundary("BOS_ID is out of bounds".into()))?;
-        *bos_slot = BOS_TOKEN.to_owned();
+        BOS_TOKEN.clone_into(bos_slot);
 
+        let eos_idx = usize::try_from(EOS_ID.get())
+            .map_err(|_err| MarkovError::Boundary("EOS_ID conversion failed".into()))?;
         let eos_slot = id_to_token
-            .get_mut(EOS_ID.get() as usize)
+            .get_mut(eos_idx)
             .ok_or_else(|| MarkovError::Boundary("EOS_ID is out of bounds".into()))?;
-        *eos_slot = EOS_TOKEN.to_owned();
+        EOS_TOKEN.clone_into(eos_slot);
 
         Ok(Self {
             order,
             token_to_id,
             id_to_token,
-            models: vec![HashMap::new(); order.as_usize()],
+            models: vec![HashMap::new(); order.as_usize()?],
             starts: HashMap::new(),
         })
     }
@@ -79,11 +83,11 @@ impl MarkovChain {
         models: Vec<HashMap<Prefix, HashMap<TokenId, Count>>>,
         starts: HashMap<Prefix, Count>,
     ) -> Result<Self, MarkovError> {
-        if models.len() != order.as_usize() {
+        if models.len() != order.as_usize()? {
             return Err(MarkovError::Boundary(format!(
                 "models count ({}) must match ngram_order ({})",
                 models.len(),
-                order.as_usize()
+                order.as_usize()?
             )));
         }
 
@@ -103,17 +107,16 @@ impl MarkovChain {
             return Ok(())
         }
 
-        let mut ids = Vec::with_capacity(tokens.len() + self.order.as_usize() + 1);
-        for _ in 0..self.order.as_usize() {
-            ids.push(BOS_ID);
-        }
+        let order_usize = self.order.as_usize()?;
+        let mut ids = Vec::with_capacity(tokens.len() + order_usize + 1);
+        ids.extend(std::iter::repeat_n(BOS_ID, order_usize));
         for token in tokens {
-            ids.push(self.get_or_insert_token(token));
+            ids.push(self.get_or_insert_token(token)?);
         }
         ids.push(EOS_ID);
 
         // Update starts
-        let start_range = ids.get(0..self.order.as_usize()).ok_or_else(|| {
+        let start_range = ids.get(0..order_usize).ok_or_else(|| {
             MarkovError::Boundary("failed to get start prefix range".into())
         })?;
         let start_prefix = Prefix::new(start_range.to_vec());
@@ -121,14 +124,14 @@ impl MarkovChain {
         *start_count = start_count.saturating_add(1);
 
         // Update models
-        for window in ids.windows(self.order.as_usize() + 1) {
+        for window in ids.windows(order_usize + 1) {
             let next = *window.last().ok_or_else(|| {
                 MarkovError::Boundary("training window is unexpectedly empty".into())
             })?;
 
-            for order_val in 1..=self.order.as_usize() {
-                let prefix_start = self.order.as_usize() - order_val;
-                let prefix_range = window.get(prefix_start..self.order.as_usize()).ok_or_else(|| {
+            for order_val in 1..=order_usize {
+                let prefix_start = order_usize - order_val;
+                let prefix_range = window.get(prefix_start..order_usize).ok_or_else(|| {
                     MarkovError::Boundary("training prefix range is invalid".into())
                 })?;
                 let prefix = Prefix::new(prefix_range.to_vec());
@@ -210,7 +213,8 @@ impl MarkovChain {
     }
 
     fn push_generated_token(&self, generated: &mut Vec<String>, id: TokenId) -> Option<()> {
-        let token = self.id_to_token.get(id.get() as usize)?;
+        let idx = usize::try_from(id.get()).ok()?;
+        let token = self.id_to_token.get(idx)?;
         generated.push(token.clone());
         Some(())
     }
@@ -251,7 +255,8 @@ impl MarkovChain {
         temperature: Temperature,
         policy: EosPolicy,
     ) -> Option<TokenId> {
-        for order_val in (1..=self.order.as_usize()).rev() {
+        let order_usize = self.order.as_usize().ok()?;
+        for order_val in (1..=order_usize).rev() {
             let prefix_start = context.len().checked_sub(order_val)?;
             let prefix_slice = context.get(prefix_start..)?;
             let prefix = Prefix::new(prefix_slice.to_vec());
@@ -287,15 +292,17 @@ impl MarkovChain {
         sampling::choose_weighted_token(&totals, rng, temperature, EosPolicy::Forbidden)
     }
 
-    fn get_or_insert_token(&mut self, token: &str) -> TokenId {
+    fn get_or_insert_token(&mut self, token: &str) -> Result<TokenId, MarkovError> {
         if let Some(id) = self.token_to_id.get(token) {
-            return *id;
+            return Ok(*id);
         }
 
-        let id = TokenId::new(self.id_to_token.len() as u32);
+        let id_val = u32::try_from(self.id_to_token.len())
+            .map_err(|_err| MarkovError::Boundary("token count exceeded u32::MAX".into()))?;
+        let id = TokenId::new(id_val);
         self.token_to_id.insert(token.to_owned(), id);
         self.id_to_token.push(token.to_owned());
-        id
+        Ok(id)
     }
 }
 

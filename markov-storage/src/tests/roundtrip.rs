@@ -2,7 +2,7 @@ use rand::{SeedableRng, rngs::StdRng};
 
 use markov_core::{GenerationOptions, MaxWords, MinWordsBeforeEos, NgramOrder, Temperature};
 
-use super::helpers::{ensure_eq, load_sample_file, sample_chain_with_order, write_sample_file};
+use super::test_support::{ensure_eq, load_sample_file, sample_chain_with_order, write_sample_file};
 
 #[test]
 fn round_trips_multiple_ngram_orders() -> Result<(), crate::StorageError> {
@@ -15,7 +15,7 @@ fn round_trips_multiple_ngram_orders() -> Result<(), crate::StorageError> {
         ensure_eq(&loaded.order(), &order, "ngram order should round-trip")?;
         ensure_eq(
             &loaded.models().len(),
-            &order.as_usize(),
+            &order.as_usize()?,
             "model section count should match ngram order",
         )?;
         ensure_eq(

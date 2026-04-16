@@ -2,7 +2,7 @@ use std::fs;
 
 use markov_core::NgramOrder;
 
-use super::helpers::{
+use super::test_support::{
     FLAGS_OFFSET, NGRAM_ORDER_OFFSET, SECTION_COUNT_OFFSET, UNSUPPORTED_FLAG, VERSION_OFFSET,
     descriptor, descriptor_flags_offset, ensure, load_sample_file, model_descriptor_index,
     read_u64_at, rewrite_checksum, sample_chain_with_order, write_sample_file, write_u32_at,

@@ -3,7 +3,7 @@ use crate::{
     StorageCompressionMode, StorageSnapshot, encode_snapshot,
 };
 
-use super::helpers::ensure;
+use super::test_support::ensure;
 
 fn valid_snapshot() -> StorageSnapshot {
     StorageSnapshot {
@@ -42,7 +42,7 @@ fn rejects_missing_special_tokens() -> Result<(), crate::StorageError> {
     let mut snapshot = valid_snapshot();
     *snapshot.tokens.get_mut(0).ok_or("tokens[0] missing")? = "wrong".to_owned();
     ensure(
-        encode_snapshot(&snapshot, StorageCompressionMode::Uncompressed).is_err(),
+        encode_snapshot(snapshot.clone(), StorageCompressionMode::Uncompressed).is_err(),
         "snapshot without BOS should be rejected",
     )
 }
@@ -52,7 +52,7 @@ fn rejects_prefix_length_mismatch() -> Result<(), crate::StorageError> {
     let mut snapshot = valid_snapshot();
     snapshot.starts.get_mut(0).ok_or("starts[0] missing")?.prefix = vec![2];
     ensure(
-        encode_snapshot(&snapshot, StorageCompressionMode::Uncompressed).is_err(),
+        encode_snapshot(snapshot.clone(), StorageCompressionMode::Uncompressed).is_err(),
         "snapshot start prefix length mismatch should be rejected",
     )
 }
@@ -64,7 +64,7 @@ fn rejects_out_of_range_token_id() -> Result<(), crate::StorageError> {
         .entries.get_mut(0).ok_or("models[0].entries[0] missing")?
         .edges.get_mut(0).ok_or("models[0].entries[0].edges[0] missing")?.next = 99;
     ensure(
-        encode_snapshot(&snapshot, StorageCompressionMode::Uncompressed).is_err(),
+        encode_snapshot(snapshot.clone(), StorageCompressionMode::Uncompressed).is_err(),
         "snapshot edge token id out of range should be rejected",
     )
 }
@@ -76,7 +76,7 @@ fn rejects_zero_count() -> Result<(), crate::StorageError> {
         .entries.get_mut(0).ok_or("models[0].entries[0] missing")?
         .edges.get_mut(0).ok_or("models[0].entries[0].edges[0] missing")?.count = 0;
     ensure(
-        encode_snapshot(&snapshot, StorageCompressionMode::Uncompressed).is_err(),
+        encode_snapshot(snapshot.clone(), StorageCompressionMode::Uncompressed).is_err(),
         "snapshot zero count should be rejected",
     )
 }
@@ -89,7 +89,7 @@ fn rejects_duplicate_edge_target() -> Result<(), crate::StorageError> {
         .edges
         .push(SnapshotEdge { next: 1, count: 2 });
     ensure(
-        encode_snapshot(&snapshot, StorageCompressionMode::Uncompressed).is_err(),
+        encode_snapshot(snapshot.clone(), StorageCompressionMode::Uncompressed).is_err(),
         "snapshot duplicate edge target should be rejected",
     )
 }

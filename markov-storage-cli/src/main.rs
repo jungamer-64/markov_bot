@@ -111,7 +111,8 @@ fn export_command(input: &Path, output: &Path) -> Result<()> {
 fn import_command(input: &Path, output: &Path) -> Result<()> {
     ensure_distinct_paths(input, output)?;
     let snapshot = read_json(input)?;
-    let payload = encode_storage_snapshot(&snapshot, snapshot.source.compression)?;
+    let compression = snapshot.source.compression;
+    let payload = encode_storage_snapshot(snapshot, compression)?;
     write_bytes(output, payload.as_slice())
 }
 

@@ -7,7 +7,7 @@ use markov_storage::StorageCompressionMode;
 pub(crate) type DynError = AnyhowError;
 
 #[derive(Clone, Debug)]
-pub(super) struct BotConfig {
+pub(crate) struct BotConfig {
     discord_token: String,
     data_path: PathBuf,
     ngram_order: NgramOrder,
@@ -24,35 +24,35 @@ impl BotConfig {
         &self.discord_token
     }
 
-    pub(crate) fn data_path(&self) -> &PathBuf {
+    pub(crate) const fn data_path(&self) -> &PathBuf {
         &self.data_path
     }
 
-    pub(crate) fn ngram_order(&self) -> NgramOrder {
+    pub(crate) const fn ngram_order(&self) -> NgramOrder {
         self.ngram_order
     }
 
-    pub(crate) fn storage_min_edge_count(&self) -> u64 {
+    pub(crate) const fn storage_min_edge_count(&self) -> u64 {
         self.storage_min_edge_count
     }
 
-    pub(crate) fn storage_compression(&self) -> StorageCompressionMode {
+    pub(crate) const fn storage_compression(&self) -> StorageCompressionMode {
         self.storage_compression
     }
 
-    pub(crate) fn max_words(&self) -> MaxWords {
+    pub(crate) const fn max_words(&self) -> MaxWords {
         self.max_words
     }
 
-    pub(crate) fn temperature(&self) -> Temperature {
+    pub(crate) const fn temperature(&self) -> Temperature {
         self.temperature
     }
 
-    pub(crate) fn min_words_before_eos(&self) -> MinWordsBeforeEos {
+    pub(crate) const fn min_words_before_eos(&self) -> MinWordsBeforeEos {
         self.min_words_before_eos
     }
 
-    pub(crate) fn reply_cooldown_secs(&self) -> u64 {
+    pub(crate) const fn reply_cooldown_secs(&self) -> u64 {
         self.reply_cooldown_secs
     }
 
@@ -73,7 +73,7 @@ impl BotConfig {
         let ngram_order = NgramOrder::new(env_parse_or_default_with(
             &mut get_var,
             "MARKOV_NGRAM_ORDER",
-            NgramOrder::DEFAULT.as_usize(),
+            NgramOrder::DEFAULT.as_usize().map_err(|e| AnyhowError::msg(e.to_string()))?,
         )?)
         .map_err(|error| AnyhowError::msg(error.to_string()))?;
 
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn defaults_ngram_order_to_six() -> Result<(), super::DynError> {
         let config = config_from_pairs(&[("DISCORD_TOKEN", "token")])?;
-        ensure(config.ngram_order().as_usize() == 6, "default ngram order should be 6")?;
+        ensure(config.ngram_order().as_usize().map_err(|e| anyhow::Error::msg(e.to_string()))? == 6, "default ngram order should be 6")?;
         Ok(())
     }
 
@@ -194,11 +194,11 @@ mod tests {
         let sixteen =
             config_from_pairs(&[("DISCORD_TOKEN", "token"), ("MARKOV_NGRAM_ORDER", "16")])?;
 
-        ensure(lower.ngram_order().as_usize() == 1, "ngram order 1 should be accepted")?;
-        ensure(upper.ngram_order().as_usize() == 6, "ngram order 6 should be accepted")?;
-        ensure(seven.ngram_order().as_usize() == 7, "ngram order 7 should be accepted")?;
+        ensure(lower.ngram_order().as_usize().map_err(|e| anyhow::Error::msg(e.to_string()))? == 1, "ngram order 1 should be accepted")?;
+        ensure(upper.ngram_order().as_usize().map_err(|e| anyhow::Error::msg(e.to_string()))? == 6, "ngram order 6 should be accepted")?;
+        ensure(seven.ngram_order().as_usize().map_err(|e| anyhow::Error::msg(e.to_string()))? == 7, "ngram order 7 should be accepted")?;
         ensure(
-            sixteen.ngram_order().as_usize() == 16,
+            sixteen.ngram_order().as_usize().map_err(|e| anyhow::Error::msg(e.to_string()))? == 16,
             "ngram order 16 should be accepted",
         )?;
         Ok(())
