@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use config::BotConfig;
-use discord_handler::DiscordHandler;
+use discord_handler::{AuthorRole, DiscordHandler};
 use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, StreamExt as _};
 use twilight_http::Client as HttpClient;
 use twilight_model::{
@@ -63,12 +63,18 @@ async fn async_main() -> Result<()> {
         };
 
         if let Event::MessageCreate(message) = event {
+            let author_role = if message.author.bot {
+                AuthorRole::Bot
+            } else {
+                AuthorRole::User
+            };
+
             if let Err(error) = handler
                 .handle_message(
                     &http,
                     message.channel_id,
                     message.author.id,
-                    message.author.bot,
+                    author_role,
                     &message.content,
                 )
                 .await

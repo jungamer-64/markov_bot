@@ -53,13 +53,25 @@ struct RuntimeState {
     target_channel_id: Option<Id<ChannelMarker>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthorRole {
+    User,
+    Bot,
+}
+
+impl AuthorRole {
+    pub(crate) const fn is_bot(self) -> bool {
+        matches!(self, Self::Bot)
+    }
+}
+
 #[derive(Debug)]
 enum HandlerCommand {
     SetTargetChannel(Id<ChannelMarker>),
     HandleMessage {
         channel_id: Id<ChannelMarker>,
         author_id: Id<UserMarker>,
-        author_is_bot: bool,
+        author_role: AuthorRole,
         tokens: Vec<String>,
         reply_tx: oneshot::Sender<Result<Option<String>, HandlerError>>,
     },
@@ -111,7 +123,7 @@ impl DiscordHandler {
         http: &HttpClient,
         channel_id: Id<ChannelMarker>,
         author_id: Id<UserMarker>,
-        author_is_bot: bool,
+        author_role: AuthorRole,
         content: &str,
     ) -> Result<(), HandlerError> {
         let tokens = self.tokenizer.tokenize(content);
@@ -120,7 +132,7 @@ impl DiscordHandler {
         self.tx.send(HandlerCommand::HandleMessage {
             channel_id,
             author_id,
-            author_is_bot,
+            author_role,
             tokens,
             reply_tx,
         }).await.map_err(|_error| HandlerError::Actor("handler actor is dead".to_owned()))?;
@@ -166,11 +178,11 @@ impl HandlerActor {
                 HandlerCommand::HandleMessage {
                     channel_id,
                     author_id,
-                    author_is_bot,
+                    author_role,
                     tokens,
                     reply_tx,
                 } => {
-                    let res = self.handle_message(channel_id, author_id, author_is_bot, tokens).await;
+                    let res = self.handle_message(channel_id, author_id, author_role, tokens).await;
                     let _ = reply_tx.send(res);
                 }
             }
@@ -181,10 +193,10 @@ impl HandlerActor {
         &mut self,
         channel_id: Id<ChannelMarker>,
         author_id: Id<UserMarker>,
-        author_is_bot: bool,
+        author_role: AuthorRole,
         tokens: Vec<String>,
     ) -> Result<Option<String>, HandlerError> {
-        if !self.should_process(channel_id, author_id, author_is_bot) {
+        if !self.should_process(channel_id, author_id, author_role) {
             return Ok(None);
         }
 
@@ -218,10 +230,10 @@ impl HandlerActor {
         &self,
         channel_id: Id<ChannelMarker>,
         author_id: Id<UserMarker>,
-        author_is_bot: bool,
+        author_role: AuthorRole,
     ) -> bool {
         self.state.target_channel_id == Some(channel_id)
-            && !should_ignore_author(author_is_bot, author_id, self.current_user_id)
+            && !should_ignore_author(author_role, author_id, self.current_user_id)
     }
 
     fn build_reply_text(&self) -> Result<String, HandlerError> {
@@ -240,11 +252,11 @@ impl HandlerActor {
 }
 
 fn should_ignore_author(
-    author_is_bot: bool,
+    author_role: AuthorRole,
     author_id: Id<UserMarker>,
     current_user_id: Id<UserMarker>,
 ) -> bool {
-    author_is_bot || author_id == current_user_id
+    author_role.is_bot() || author_id == current_user_id
 }
 
 fn can_reply(last_reply_at: Option<Instant>, cooldown: Duration) -> bool {
