@@ -268,27 +268,3 @@ fn should_ignore_author(
 fn can_reply(last_reply_at: Option<Instant>, cooldown: Duration) -> bool {
     last_reply_at.is_none_or(|last| last.elapsed() >= cooldown)
 }
-
-async fn load_chain(path: &Path, expected_ngram_order: NgramOrder) -> Result<MarkovChain, HandlerError> {
-    if !path.exists() {
-        return MarkovChain::new(expected_ngram_order).map_err(Into::into);
-    }
-
-    let bytes = fs::read(path).await?;
-    decode_chain(bytes.as_slice(), expected_ngram_order).map_err(Into::into)
-}
-
-async fn save_chain(
-    path: &Path,
-    chain: &MarkovChain,
-    min_edge_count: u64,
-    compression_mode: StorageCompressionMode,
-) -> Result<(), HandlerError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).await?;
-    }
-
-    let payload = encode_chain(chain, markov_core::Count::new(min_edge_count), compression_mode)?;
-    fs::write(path, payload).await?;
-    Ok(())
-}

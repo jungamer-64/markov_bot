@@ -120,39 +120,11 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>> {
     fs::read(path).with_context(|| format!("failed to read {}", path.display()))
 }
 
-fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    fs::write(path, bytes).with_context(|| format!("failed to write {}", path.display()))
-}
-
 fn read_json(path: &Path) -> Result<StorageSnapshot> {
     let file = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let reader = BufReader::new(file);
     serde_json::from_reader(reader)
         .with_context(|| format!("failed to parse JSON from {}", path.display()))
-}
-
-fn write_json(path: &Path, snapshot: &StorageSnapshot) -> Result<()> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
-    let file =
-        File::create(path).with_context(|| format!("failed to create {}", path.display()))?;
-    let mut writer = BufWriter::new(file);
-    serde_json::to_writer_pretty(&mut writer, snapshot)
-        .with_context(|| format!("failed to write JSON to {}", path.display()))?;
-    writer.write_all(b"\n")?;
-    writer.flush()?;
-    Ok(())
 }
 
 fn ensure_distinct_paths(input: &Path, output: &Path) -> Result<()> {

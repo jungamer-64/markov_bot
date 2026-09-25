@@ -32,7 +32,7 @@ impl fmt::Display for TokenId {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TokenRegistry {
     token_to_id: HashMap<String, TokenId>,
     id_to_token: Vec<String>,
@@ -104,33 +104,7 @@ impl TokenRegistry {
         self.id_to_token.is_empty()
     }
 
-    /// # Errors
-    /// Returns `MarkovError::Boundary` if the parts are inconsistent (e.g., special tokens missing or misaligned).
-    pub fn from_parts(
-        token_to_id: HashMap<String, TokenId>,
-        id_to_token: Vec<String>,
-    ) -> Result<Self, MarkovError> {
-        if id_to_token.len() != token_to_id.len() {
-            return Err(MarkovError::Boundary("Token registry parts size mismatch".into()));
-        }
 
-        if id_to_token.first().map(String::as_str) != Some(BOS_TOKEN)
-            || token_to_id.get(BOS_TOKEN) != Some(&BOS_ID)
-        {
-            return Err(MarkovError::Boundary("BOS token missing or misaligned".into()));
-        }
-
-        if id_to_token.get(1).map(String::as_str) != Some(EOS_TOKEN)
-            || token_to_id.get(EOS_TOKEN) != Some(&EOS_ID)
-        {
-            return Err(MarkovError::Boundary("EOS token missing or misaligned".into()));
-        }
-
-        Ok(Self {
-            token_to_id,
-            id_to_token,
-        })
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
