@@ -5,13 +5,13 @@ edition = "2024"
 
 [dependencies]
 markov-core = { path = "../markov-core" }
-serde = { version = "1.0.228", features = ["derive"] }
-thiserror = "2.0.17"
-zstd = "0.13.3"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+zstd = "0.14.0"
 
 [dev-dependencies]
-rand = "0.10"
-tempfile = "3"
+rand = "0.10.3"
+tempfile = "3.27.0"
 
 [lints]
 workspace = true

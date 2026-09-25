@@ -1,7 +1,6 @@
-use lindera::{
-    dictionary::load_dictionary, mode::Mode, segmenter::Segmenter,
-    tokenizer::Tokenizer as LinderaTokenizer,
-};
+use std::borrow::Cow;
+
+use lindera::{dictionary::load_dictionary, mode::Mode, segmenter::Segmenter};
 use thiserror::Error;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -16,7 +15,7 @@ pub(crate) enum TokenizerError {
 
 #[derive(Clone)]
 pub(crate) enum Tokenizer {
-    Lindera(Box<LinderaTokenizer>),
+    Lindera(Box<Segmenter>),
     Fallback,
 }
 
@@ -24,8 +23,8 @@ impl Tokenizer {
     /// # Errors
     /// Returns `TokenizerError` if Lindera tokenizer initialization fails.
     pub(crate) fn new() -> Result<Self, TokenizerError> {
-        let tokenizer = build_lindera_tokenizer()?;
-        Ok(Self::Lindera(Box::new(tokenizer)))
+        let segmenter = build_lindera_segmenter()?;
+        Ok(Self::Lindera(Box::new(segmenter)))
     }
 
     #[must_use]
@@ -40,7 +39,7 @@ impl Tokenizer {
         }
 
         match self {
-            Self::Lindera(tokenizer) => match tokenize_with_lindera(tokenizer, &normalized) {
+            Self::Lindera(segmenter) => match segment_with_lindera(segmenter, &normalized) {
                 Ok(tokens) if !tokens.is_empty() => tokens,
                 _ => fallback_tokenize(&normalized),
             },
@@ -49,12 +48,9 @@ impl Tokenizer {
     }
 }
 
-fn tokenize_with_lindera(
-    tokenizer: &LinderaTokenizer,
-    text: &str,
-) -> Result<Vec<String>, TokenizerError> {
-    let tokens = tokenizer
-        .tokenize(text)?
+fn segment_with_lindera(segmenter: &Segmenter, text: &str) -> Result<Vec<String>, TokenizerError> {
+    let tokens = segmenter
+        .segment(Cow::Borrowed(text))?
         .into_iter()
         .map(|token| token.surface.as_ref().to_owned())
         .filter(|token| !token.trim().is_empty())
@@ -63,12 +59,12 @@ fn tokenize_with_lindera(
     Ok(tokens)
 }
 
-fn build_lindera_tokenizer() -> Result<LinderaTokenizer, TokenizerError> {
-    let dictionary = load_dictionary("embedded://ipadic")
-        .map_err(|e| TokenizerError::Lindera(e.to_string()))?;
+fn build_lindera_segmenter() -> Result<Segmenter, TokenizerError> {
+    let dictionary =
+        load_dictionary("embedded://ipadic").map_err(|e| TokenizerError::Lindera(e.to_string()))?;
     let segmenter = Segmenter::new(Mode::Normal, dictionary, None);
 
-    Ok(LinderaTokenizer::new(segmenter))
+    Ok(segmenter)
 }
 
 fn normalize_text(text: &str) -> String {
@@ -93,7 +89,19 @@ fn fallback_tokenize(text: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::fallback_tokenize;
+    use super::{Tokenizer, fallback_tokenize};
+
+    #[test]
+    fn lindera_segments_japanese_text() {
+        let result =
+            Tokenizer::new().map(|tokenizer| tokenizer.tokenize("関西国際空港限定トートバッグ"));
+        assert!(
+            matches!(result, Ok(ref tokens) if tokens == &[
+                "関西国際空港", "限定", "トートバッグ"
+            ]),
+            "unexpected segmentation: {result:?}"
+        );
+    }
 
     #[test]
     fn fallback_tokenize_extracts_words() {
