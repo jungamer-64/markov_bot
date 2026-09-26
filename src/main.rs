@@ -4,7 +4,7 @@ mod tokenizer;
 
 use anyhow::Result;
 use config::BotConfig;
-use discord_handler::{AuthorRole, DiscordHandler};
+use discord_handler::{AuthorRole, DiscordHandler, HandlerError};
 use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, StreamExt as _};
 use twilight_http::Client as HttpClient;
 use twilight_model::{
@@ -47,12 +47,32 @@ async fn async_main() -> Result<()> {
     let http = HttpClient::new(token.clone());
     let current_user_id = http.current_user().await?.model().await?.id;
     let application_id = http.current_user_application().await?.model().await?.id;
-    let handler = DiscordHandler::new(config, current_user_id).await?;
     register_slash_commands(&http, application_id).await?;
+    let (handler, mut worker) = DiscordHandler::new(config, current_user_id).await?;
 
     let intents = Intents::GUILDS | Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT;
     let mut shard = Shard::new(ShardId::ONE, token, intents);
 
+    let result = tokio::select! {
+        result = &mut worker => {
+            drop(handler);
+            return result?.map_err(Into::into);
+        },
+        signal = shutdown_signal() => signal.map_err(Into::into),
+        result = run_gateway(&mut shard, &http, &handler, application_id) => result,
+    };
+    // Closing admission precedes joining; accepted commands and their saves drain.
+    drop(handler);
+    worker.await??;
+    result
+}
+
+async fn run_gateway(
+    shard: &mut Shard,
+    http: &HttpClient,
+    handler: &DiscordHandler,
+    application_id: Id<ApplicationMarker>,
+) -> Result<()> {
     while let Some(item) = shard.next_event(EventTypeFlags::all()).await {
         let event = match item {
             Ok(event) => event,
@@ -71,7 +91,7 @@ async fn async_main() -> Result<()> {
 
             if let Err(error) = handler
                 .handle_message(
-                    &http,
+                    http,
                     message.channel_id,
                     message.author.id,
                     author_role,
@@ -79,20 +99,39 @@ async fn async_main() -> Result<()> {
                 )
                 .await
             {
-                eprintln!("Failed to process message: {error}");
+                if matches!(error, HandlerError::Discord(_)) {
+                    eprintln!("Failed to send reply: {error}");
+                } else {
+                    return Err(error.into());
+                }
             }
             continue;
         }
 
         if let Event::InteractionCreate(interaction) = event
             && let Err(error) =
-                handle_interaction_command(&http, &handler, interaction.0, application_id).await
+                handle_interaction_command(http, handler, interaction.0, application_id).await
         {
             eprintln!("Failed to process interaction: {error}");
         }
     }
-
     Ok(())
+}
+
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result,
+            _ = terminate.recv() => Ok(()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await
+    }
 }
 
 fn install_rustls_provider() {
@@ -161,7 +200,7 @@ async fn handle_interaction_command(
 
     let response_message =
         if let Some(channel_id) = extract_channel_option(command_data.options.as_slice()) {
-            handler.set_target_channel(channel_id).await;
+            handler.set_target_channel(channel_id).await?;
 
             format!("対象チャンネルを <#{channel_id}> に設定しました。")
         } else {

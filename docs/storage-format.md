@@ -56,7 +56,6 @@ struct Header {
 
 - `0x0000_0001`: RLE
 - `0x0000_0002`: Zstd
-- `0x0000_0004`: LZ4 (`lz4_flex` block format)
 
 `0` または上記いずれか 1 つのみ許可します。
 
@@ -99,13 +98,14 @@ struct SectionDescriptor {
 ### VocabBlob
 
 - token UTF-8 bytes を連結した blob
-- `Header.flags` に従って plain / RLE / Zstd / LZ4 で保存される
+- `Header.flags` に従って plain / RLE / Zstd で保存される
 - 復号後サイズは `VocabOffsets.last()` と一致しなければならない
 
 語彙復元後は次を満たす必要があります。
 
 - token id `0` は `<BOS>`
 - token id `1` は `<EOS>`
+- token 文字列は重複しない
 
 ## Starts section
 
@@ -119,6 +119,8 @@ struct StartRecord {
 ```
 
 - `prefix` は start prefix を直接保持する
+- prefix は辞書順で一意、token ID は語彙の範囲内
+- prefix は生成開始 context であり、特定次数の Model への参照ではない。保存時フィルタでは最高次数の遷移が残る context のみを書き出す
 - `cumulative` は strictly increasing
 - record size は `ngram_order * 4 + 8`
 
@@ -149,7 +151,9 @@ struct EdgeRecord {
 }
 ```
 
-- `prefix` はその order の prefix を直接保持する
+- `prefix` はその order の prefix を直接保持し、辞書順で一意
+- edge は token ID 順で一意、各 prefix に最低 1 件あり、count は正
+- prefix / edge の token ID は語彙の範囲内
 - `edge_start` / `edge_len` は同一 section 内の `EdgeRecord` 配列を指す
 - `EdgeRecord.cumulative` は各 prefix 内で strictly increasing
 - `ModelRecord.total` はその prefix の最後の cumulative と一致しなければならない
@@ -169,7 +173,9 @@ reader は少なくとも次を検証します。
 - prefix / edge が token range 内であること
 - cumulative counts が strictly increasing であること
 - `edge_start` / `edge_len` が有効範囲で連続していること
-- checksum 一致
+- checksum 一致（checksum field 自体をゼロとしてファイル全体を FNV-1a 64-bit で計算）
+- descriptor 配列と各 body の必要 byte 数を確保前に検証
+- `StorageLimits` によるファイル byte 数と展開後語彙 byte 数の独立した制限
 
 ## 互換性
 
@@ -177,4 +183,10 @@ reader は少なくとも次を検証します。
 - v7 以前の `.mkv3` はこの format と互換ではない
 - runtime の `MARKOV_NGRAM_ORDER` と保存済み `ngram_order` が違う場合、復元は明示エラーで停止する
 
-日常的な inspect / export / import / migrate の使い方は [operations.md](operations.md) を参照してください。
+日常的な inspect / export / import の使い方は [operations.md](operations.md) を参照してください。
+
+## JSON snapshot
+
+`schema_version` は 1、`source.storage_version` は 8 です。`source.compression` は実際の圧縮方式を表す `uncompressed` / `rle` / `zstd` のいずれかです。自動選択は writer の方針であり、snapshot の provenance ではありません。
+
+`models` は 1 から `source.ngram_order` までの各次数を一度ずつ持ちます。JSON 内の model / prefix / edge の並び順は自由ですが、重複を上書きして受理することはありません。語彙、prefix 長、参照、正の count、合計の overflow を構築時に検証します。未知の field は拒否します。binary writer は canonical な順序へ整列します。

@@ -1,11 +1,7 @@
+use markov_core::{Count, NgramOrder, Prefix, TokenId};
 use std::ops::Range;
 
-use crate::{
-    config::DynError,
-    descriptor_count_for_ngram_order,
-    markov::{Count, NgramOrder, Prefix, TokenId},
-    StorageError,
-};
+use crate::{StorageError, descriptor_count_for_ngram_order};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Header {
@@ -21,9 +17,10 @@ pub(super) struct Header {
 }
 
 impl Header {
-    pub(super) fn expected_section_count(&self) -> Result<u64, DynError> {
-        let order = usize::try_from(self.ngram_order)
-            .map_err(|err| StorageError::Format(format!("ngram_order exceeds usize range: {err}")))?;
+    pub(super) fn expected_section_count(&self) -> Result<u64, StorageError> {
+        let order = usize::try_from(self.ngram_order).map_err(|err| {
+            StorageError::Format(format!("ngram_order exceeds usize range: {err}"))
+        })?;
         descriptor_count_for_ngram_order(order)
     }
 }
@@ -93,26 +90,29 @@ pub(super) struct SectionTable {
 }
 
 impl SectionTable {
-    pub(super) fn unique_entry(&self, kind: SectionKind) -> Result<&SectionEntry, DynError> {
+    pub(super) fn unique_entry(&self, kind: SectionKind) -> Result<&SectionEntry, StorageError> {
         let mut matches = self
             .entries
             .iter()
             .filter(|entry| entry.descriptor.kind() == Some(kind));
 
-        let entry = matches
-            .next()
-            .ok_or_else(|| StorageError::Format(format!("section table is missing {}", kind.label())))?;
+        let entry = matches.next().ok_or_else(|| {
+            StorageError::Format(format!("section table is missing {}", kind.label()))
+        })?;
         if matches.next().is_some() {
-            return Err(StorageError::Format(format!("section table has duplicate {}", kind.label())));
+            return Err(StorageError::Format(format!(
+                "section table has duplicate {}",
+                kind.label()
+            )));
         }
 
         Ok(entry)
     }
 
     pub(super) fn model_entries(&self) -> impl Iterator<Item = &SectionEntry> {
-        self.entries.iter().filter(|entry| {
-            entry.descriptor.kind() == Some(SectionKind::Model)
-        })
+        self.entries
+            .iter()
+            .filter(|entry| entry.descriptor.kind() == Some(SectionKind::Model))
     }
 }
 

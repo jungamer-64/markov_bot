@@ -1,12 +1,11 @@
 use std::collections::HashMap;
 
 use super::{
-    DynError, MODEL_SECTION_HEADER_SIZE, START_SECTION_HEADER_SIZE, StorageCompressionMode,
+    MODEL_SECTION_HEADER_SIZE, START_SECTION_HEADER_SIZE, StorageCompressionMode, StorageError,
     align_to_eight, bytes_for_len, checked_add, compute_checksum, model_record_size,
     start_record_size, u32_from_usize, u64_from_usize, validate_special_tokens,
-    StorageError,
 };
-use crate::markov::{Count, MarkovChain, Prefix, TokenId};
+use markov_core::{Count, MarkovChain, Prefix, TokenId};
 
 use super::types::{
     EdgeRecord, ModelRecord, ModelSection, SectionDescriptor, SectionKind, StartRecord,
@@ -21,22 +20,35 @@ const REPEAT_CHUNK_MAX: usize = 130;
 pub(super) fn compile_chain(
     chain: &MarkovChain,
     min_edge_count: Count,
-) -> Result<StorageSections, DynError> {
+    limits: super::StorageLimits,
+) -> Result<StorageSections, StorageError> {
     validate_special_tokens(chain.registry().tokens())?;
     if min_edge_count.get() == 0 {
-        return Err(StorageError::Format("min_edge_count must be >= 1".to_owned()));
+        return Err(StorageError::Format(
+            "min_edge_count must be >= 1".to_owned(),
+        ));
     }
 
-    let starts = compile_starts(chain)?;
+    limits.check_vocab_tokens(chain.registry().tokens())?;
     let mut models = Vec::with_capacity(chain.order().as_usize()?);
     for order_val in (1..=chain.order().as_usize()?).rev() {
-        let model = chain
-            .models()
-            .get(order_val - 1)
-            .ok_or_else(|| StorageError::Format(format!("chain model section for order {order_val} is missing")))?;
+        let model = chain.models().get(order_val - 1).ok_or_else(|| {
+            StorageError::Format(format!(
+                "chain model section for order {order_val} is missing"
+            ))
+        })?;
         models.push(compile_model(model, order_val, min_edge_count)?);
     }
 
+    let highest = models
+        .first()
+        .ok_or_else(|| StorageError::Format("missing highest-order model".into()))?;
+    let retained = highest
+        .records
+        .iter()
+        .map(|record| &record.prefix)
+        .collect::<std::collections::BTreeSet<_>>();
+    let starts = compile_starts(chain, &retained)?;
     Ok(StorageSections {
         ngram_order: chain.order(),
         vocab: VocabSections {
@@ -51,13 +63,16 @@ pub(super) fn compile_chain(
 pub(super) fn encode_storage(
     sections: &StorageSections,
     compression_mode: StorageCompressionMode,
-) -> Result<Vec<u8>, DynError> {
+    limits: super::StorageLimits,
+) -> Result<Vec<u8>, StorageError> {
     let mut bytes = Vec::new();
 
     let (vocab_blob, flags) = encode_vocab_blob(&sections.vocab.blob, compression_mode)?;
     let section_count = u64_from_usize(sections.models.len() + 3, "section count")?;
     let file_size = calculate_file_size(sections, vocab_blob.len(), section_count)?;
 
+    limits.check(super::LimitKind::FileBytes, file_size)?;
+    bytes.try_reserve_exact(usize_try_from_u64(file_size, "file size")?)?;
     write_header(&mut bytes, sections, flags, section_count, file_size)?;
     let descriptors = write_descriptors(&mut bytes, sections, vocab_blob.len())?;
     pad_to_eight(&mut bytes)?;
@@ -70,7 +85,7 @@ pub(super) fn encode_storage(
     Ok(bytes)
 }
 
-fn build_vocab_offsets(tokens: &[String]) -> Result<Vec<u64>, DynError> {
+fn build_vocab_offsets(tokens: &[String]) -> Result<Vec<u64>, StorageError> {
     let mut offsets = Vec::with_capacity(tokens.len() + 1);
     let mut current = 0_u64;
     offsets.push(current);
@@ -88,13 +103,13 @@ fn calculate_file_size(
     sections: &StorageSections,
     vocab_blob_len: usize,
     section_count: u64,
-) -> Result<u64, DynError> {
+) -> Result<u64, StorageError> {
     let mut current = super::aligned_metadata_end(section_count)?;
 
     let mut add_section = |size: u64| {
-        current = align_to_eight(current);
+        current = align_to_eight(current)?;
         current = checked_add(current, size, "file size")?;
-        Ok::<(), DynError>(())
+        Ok::<(), StorageError>(())
     };
 
     add_section(bytes_for_len(
@@ -115,7 +130,10 @@ fn calculate_file_size(
     Ok(current)
 }
 
-fn calculate_starts_section_size(records: &[StartRecord], order: usize) -> Result<u64, DynError> {
+fn calculate_starts_section_size(
+    records: &[StartRecord],
+    order: usize,
+) -> Result<u64, StorageError> {
     let records_len = bytes_for_len(records.len(), start_record_size(order)?, "starts section")?;
     checked_add(
         START_SECTION_HEADER_SIZE,
@@ -124,13 +142,17 @@ fn calculate_starts_section_size(records: &[StartRecord], order: usize) -> Resul
     )
 }
 
-fn calculate_model_section_size(model: &ModelSection) -> Result<u64, DynError> {
+fn calculate_model_section_size(model: &ModelSection) -> Result<u64, StorageError> {
     let records_len = bytes_for_len(
         model.records.len(),
         model_record_size(model.order)?,
         "model section records",
     )?;
-    let edges_len = bytes_for_len(model.edges.len(), super::EDGE_RECORD_SIZE, "model section edges")?;
+    let edges_len = bytes_for_len(
+        model.edges.len(),
+        super::EDGE_RECORD_SIZE,
+        "model section edges",
+    )?;
     checked_add(
         MODEL_SECTION_HEADER_SIZE,
         checked_add(records_len, edges_len, "model section records and edges")?,
@@ -142,7 +164,7 @@ fn compile_model(
     model_data: &HashMap<Prefix, HashMap<TokenId, Count>>,
     order: usize,
     min_edge_count: Count,
-) -> Result<ModelSection, DynError> {
+) -> Result<ModelSection, StorageError> {
     let mut records = Vec::with_capacity(model_data.len());
     let mut edges = Vec::with_capacity(model_data.len());
     let mut prefixes = model_data.keys().collect::<Vec<_>>();
@@ -156,9 +178,9 @@ fn compile_model(
             )));
         }
 
-        let candidates = model_data
-            .get(prefix)
-            .ok_or_else(|| StorageError::Format(format!("model{order} is missing prefix {prefix:?}")))?;
+        let candidates = model_data.get(prefix).ok_or_else(|| {
+            StorageError::Format(format!("model{order} is missing prefix {prefix:?}"))
+        })?;
         let mut targets = candidates.keys().collect::<Vec<_>>();
         targets.sort_unstable();
 
@@ -166,17 +188,20 @@ fn compile_model(
         let mut cumulative = 0_u64;
 
         for next in targets {
-            let count = candidates
-                .get(next)
-                .ok_or_else(|| StorageError::Format(format!("model{order} is missing next token {next:?}")))?;
+            let count = candidates.get(next).ok_or_else(|| {
+                StorageError::Format(format!("model{order} is missing next token {next:?}"))
+            })?;
             if count.get() < min_edge_count.get() {
                 continue;
             }
 
-            cumulative = cumulative
-                .checked_add(count.get())
-                .ok_or_else(|| StorageError::Format("model edge cumulative count overflow".to_owned()))?;
-            edges.push(EdgeRecord { next: *next, cumulative: Count::new(cumulative) });
+            cumulative = cumulative.checked_add(count.get()).ok_or_else(|| {
+                StorageError::Format("model edge cumulative count overflow".to_owned())
+            })?;
+            edges.push(EdgeRecord {
+                next: *next,
+                cumulative: Count::new(cumulative),
+            });
         }
 
         let edge_len = u32_from_usize(edges.len(), "model edge len")? - edge_start;
@@ -197,13 +222,19 @@ fn compile_model(
     })
 }
 
-fn compile_starts(chain: &MarkovChain) -> Result<Vec<StartRecord>, DynError> {
+fn compile_starts(
+    chain: &MarkovChain,
+    retained: &std::collections::BTreeSet<&Prefix>,
+) -> Result<Vec<StartRecord>, StorageError> {
     let mut records = Vec::with_capacity(chain.starts().len());
     let mut prefixes = chain.starts().keys().collect::<Vec<_>>();
     prefixes.sort_unstable();
 
     let mut cumulative = 0_u64;
     for prefix in prefixes {
+        if !retained.contains(prefix) {
+            continue;
+        }
         if prefix.len() != chain.order().as_usize()? {
             return Err(StorageError::Format(format!(
                 "start record prefix length mismatch: expected {}, got {}",
@@ -212,17 +243,16 @@ fn compile_starts(chain: &MarkovChain) -> Result<Vec<StartRecord>, DynError> {
             )));
         }
 
-        let count = chain
-            .starts()
-            .get(prefix)
-            .ok_or_else(|| StorageError::Format(format!("chain starts is missing prefix {prefix:?}")))?;
+        let count = chain.starts().get(prefix).ok_or_else(|| {
+            StorageError::Format(format!("chain starts is missing prefix {prefix:?}"))
+        })?;
         if count.get() == 0 {
             continue;
         }
 
-        cumulative = cumulative
-            .checked_add(count.get())
-            .ok_or_else(|| StorageError::Format("start record cumulative count overflow".to_owned()))?;
+        cumulative = cumulative.checked_add(count.get()).ok_or_else(|| {
+            StorageError::Format("start record cumulative count overflow".to_owned())
+        })?;
         records.push(StartRecord {
             prefix: prefix.clone(),
             cumulative: Count::new(cumulative),
@@ -238,13 +268,16 @@ fn write_header(
     flags: u32,
     section_count: u64,
     file_size: u64,
-) -> Result<(), DynError> {
+) -> Result<(), StorageError> {
     target.extend_from_slice(super::MAGIC.as_slice());
     write_u32(target, super::VERSION);
     write_u32(target, flags);
     write_u32(target, super::TOKENIZER_VERSION);
     write_u32(target, super::NORMALIZATION_FLAGS);
-    write_u32(target, u32_from_usize(sections.ngram_order.as_usize()?, "ngram order")?);
+    write_u32(
+        target,
+        u32_from_usize(sections.ngram_order.as_usize()?, "ngram order")?,
+    );
     write_u64(target, section_count);
     write_u64(target, file_size);
     write_u64(target, super::CHECKSUM_PLACEHOLDER);
@@ -255,13 +288,13 @@ fn write_descriptors(
     target: &mut Vec<u8>,
     sections: &StorageSections,
     vocab_blob_len: usize,
-) -> Result<Vec<SectionDescriptor>, DynError> {
+) -> Result<Vec<SectionDescriptor>, StorageError> {
     let section_count = u64_from_usize(sections.models.len() + 3, "section count")?;
     let mut descriptors = Vec::with_capacity(usize_try_from_u64(section_count, "section count")?);
     let mut current_offset = super::aligned_metadata_end(section_count)?;
 
     let mut add_descriptor = |kind: SectionKind, flags: u32, size: u64| {
-        current_offset = align_to_eight(current_offset);
+        current_offset = align_to_eight(current_offset)?;
         let descriptor = SectionDescriptor {
             kind: kind.as_u32(),
             flags,
@@ -274,7 +307,7 @@ fn write_descriptors(
         write_u64(target, descriptor.offset);
         write_u64(target, descriptor.size);
         current_offset += size;
-        Ok::<(), DynError>(())
+        Ok::<(), StorageError>(())
     };
 
     add_descriptor(
@@ -290,7 +323,10 @@ fn write_descriptors(
     add_descriptor(
         SectionKind::Starts,
         0,
-        calculate_starts_section_size(sections.starts.as_slice(), sections.ngram_order.as_usize()?)?,
+        calculate_starts_section_size(
+            sections.starts.as_slice(),
+            sections.ngram_order.as_usize()?,
+        )?,
     )?;
 
     for model in &sections.models {
@@ -309,22 +345,28 @@ fn write_sections(
     sections: &StorageSections,
     descriptors: &[SectionDescriptor],
     vocab_blob: &[u8],
-) -> Result<(), DynError> {
+) -> Result<(), StorageError> {
     write_u64_section(
         target,
         sections.vocab.offsets.as_slice(),
-        descriptors.first().ok_or_else(|| StorageError::Format("missing vocab offsets descriptor".to_owned()))?,
+        descriptors
+            .first()
+            .ok_or_else(|| StorageError::Format("missing vocab offsets descriptor".to_owned()))?,
     )?;
     write_blob_section(
         target,
         vocab_blob,
-        descriptors.get(1).ok_or_else(|| StorageError::Format("missing vocab blob descriptor".to_owned()))?,
+        descriptors
+            .get(1)
+            .ok_or_else(|| StorageError::Format("missing vocab blob descriptor".to_owned()))?,
     )?;
     write_starts_section(
         target,
         sections.starts.as_slice(),
         sections.ngram_order.as_usize()?,
-        descriptors.get(2).ok_or_else(|| StorageError::Format("missing starts descriptor".to_owned()))?,
+        descriptors
+            .get(2)
+            .ok_or_else(|| StorageError::Format("missing starts descriptor".to_owned()))?,
     )?;
 
     for (index, model) in sections.models.iter().enumerate() {
@@ -344,7 +386,7 @@ fn write_u64_section(
     target: &mut Vec<u8>,
     values: &[u64],
     descriptor: &SectionDescriptor,
-) -> Result<(), DynError> {
+) -> Result<(), StorageError> {
     pad_to_offset(target, descriptor.offset)?;
     for value in values {
         write_u64(target, *value);
@@ -356,7 +398,7 @@ fn write_blob_section(
     target: &mut Vec<u8>,
     blob: &[u8],
     descriptor: &SectionDescriptor,
-) -> Result<(), DynError> {
+) -> Result<(), StorageError> {
     pad_to_offset(target, descriptor.offset)?;
     target.extend_from_slice(blob);
     Ok(())
@@ -367,7 +409,7 @@ fn write_starts_section(
     records: &[StartRecord],
     ngram_order: usize,
     descriptor: &SectionDescriptor,
-) -> Result<(), DynError> {
+) -> Result<(), StorageError> {
     pad_to_offset(target, descriptor.offset)?;
 
     write_u32(target, u32_from_usize(records.len(), "start records")?);
@@ -392,10 +434,13 @@ fn write_model_section(
     target: &mut Vec<u8>,
     section: &ModelSection,
     descriptor: &SectionDescriptor,
-) -> Result<(), DynError> {
+) -> Result<(), StorageError> {
     pad_to_offset(target, descriptor.offset)?;
 
-    write_u32(target, u32_from_usize(section.records.len(), "model records")?);
+    write_u32(
+        target,
+        u32_from_usize(section.records.len(), "model records")?,
+    );
     write_u32(target, u32_from_usize(section.edges.len(), "model edges")?);
 
     for record in &section.records {
@@ -424,25 +469,28 @@ fn write_model_section(
     Ok(())
 }
 
-fn pad_to_offset(target: &mut Vec<u8>, offset: u64) -> Result<(), DynError> {
-    let offset = usize::try_from(offset).map_err(|_error| StorageError::Format("offset exceeds usize range".to_owned()))?;
+fn pad_to_offset(target: &mut Vec<u8>, offset: u64) -> Result<(), StorageError> {
+    let offset = usize::try_from(offset)
+        .map_err(|_error| StorageError::Format("offset exceeds usize range".to_owned()))?;
     if target.len() > offset {
-        return Err(StorageError::Format("target already exceeds requested offset".to_owned()));
+        return Err(StorageError::Format(
+            "target already exceeds requested offset".to_owned(),
+        ));
     }
     target.resize(offset, 0);
     Ok(())
 }
 
-fn pad_to_eight(target: &mut Vec<u8>) -> Result<(), DynError> {
+fn pad_to_eight(target: &mut Vec<u8>) -> Result<(), StorageError> {
     let current = u64_from_usize(target.len(), "buffer size")?;
-    let padded = align_to_eight(current);
+    let padded = align_to_eight(current)?;
     pad_to_offset(target, padded)
 }
 
 fn encode_vocab_blob(
     blob: &[u8],
     mode: StorageCompressionMode,
-) -> Result<(Vec<u8>, u32), DynError> {
+) -> Result<(Vec<u8>, u32), StorageError> {
     if blob.len() < VOCAB_COMPRESSION_THRESHOLD && mode == StorageCompressionMode::Auto {
         return Ok((blob.to_vec(), 0));
     }
@@ -453,38 +501,47 @@ fn encode_vocab_blob(
             Ok((encode_vocab_blob_rle(blob)?, super::FLAG_VOCAB_BLOB_RLE))
         }
         StorageCompressionMode::Zstd | StorageCompressionMode::Auto => {
-            let encoded = zstd::bulk::compress(blob, 3)?;
+            let encoded = zstd::bulk::compress(blob, 3)
+                .map_err(|error| StorageError::Format(format!("zstd encoding failed: {error}")))?;
             Ok((encoded, super::FLAG_VOCAB_BLOB_ZSTD))
         }
     }
 }
 
-fn encode_vocab_blob_rle(blob: &[u8]) -> Result<Vec<u8>, DynError> {
+fn encode_vocab_blob_rle(blob: &[u8]) -> Result<Vec<u8>, StorageError> {
     let mut encoded = Vec::with_capacity(blob.len());
     let mut cursor = 0_usize;
 
     while cursor < blob.len() {
-        let repeat_len = count_repeats(blob.get(cursor..).ok_or_else(|| StorageError::Format("RLE: blob range is invalid".to_owned()))?);
+        let repeat_len = count_repeats(
+            blob.get(cursor..)
+                .ok_or_else(|| StorageError::Format("RLE: blob range is invalid".to_owned()))?,
+        );
         if repeat_len >= REPEAT_CHUNK_MIN {
             let chunk_len = repeat_len.min(REPEAT_CHUNK_MAX);
             let control = REPEAT_CONTROL_THRESHOLD
-                .checked_add(u8::try_from(chunk_len - REPEAT_CHUNK_MIN).map_err(|_error| StorageError::Format("RLE: chunk_len overflow".to_owned()))?)
+                .checked_add(
+                    u8::try_from(chunk_len - REPEAT_CHUNK_MIN).map_err(|_error| {
+                        StorageError::Format("RLE: chunk_len overflow".to_owned())
+                    })?,
+                )
                 .ok_or_else(|| StorageError::Format("RLE: control byte overflow".to_owned()))?;
             encoded.push(control);
-            encoded.push(
-                *blob
-                    .get(cursor)
-                    .ok_or_else(|| StorageError::Format("RLE: repeat byte range is invalid".to_owned()))?,
-            );
+            encoded.push(*blob.get(cursor).ok_or_else(|| {
+                StorageError::Format("RLE: repeat byte range is invalid".to_owned())
+            })?);
             cursor += chunk_len;
         } else {
-            let literal_len = count_literals(blob.get(cursor..).ok_or_else(|| StorageError::Format("RLE: literal blob range is invalid".to_owned()))?);
+            let literal_len = count_literals(blob.get(cursor..).ok_or_else(|| {
+                StorageError::Format("RLE: literal blob range is invalid".to_owned())
+            })?);
             let chunk_len = literal_len.min(usize::from(REPEAT_CONTROL_THRESHOLD));
-            encoded.push(u8::try_from(chunk_len - 1).map_err(|_error| StorageError::Format("RLE: literal chunk_len underflow".to_owned()))?);
-            encoded.extend_from_slice(
-                blob.get(cursor..cursor + chunk_len)
-                    .ok_or_else(|| StorageError::Format("RLE: literal chunk range is invalid".to_owned()))?,
-            );
+            encoded.push(u8::try_from(chunk_len - 1).map_err(|_error| {
+                StorageError::Format("RLE: literal chunk_len underflow".to_owned())
+            })?);
+            encoded.extend_from_slice(blob.get(cursor..cursor + chunk_len).ok_or_else(|| {
+                StorageError::Format("RLE: literal chunk range is invalid".to_owned())
+            })?);
             cursor += chunk_len;
         }
     }
@@ -518,6 +575,7 @@ fn write_u64(target: &mut Vec<u8>, value: u64) {
     target.extend_from_slice(value.to_le_bytes().as_slice());
 }
 
-fn usize_try_from_u64(value: u64, context: &str) -> Result<usize, DynError> {
-    usize::try_from(value).map_err(|_error| StorageError::Format(format!("{context} exceeds usize range")))
+fn usize_try_from_u64(value: u64, context: &str) -> Result<usize, StorageError> {
+    usize::try_from(value)
+        .map_err(|_error| StorageError::Format(format!("{context} exceeds usize range")))
 }

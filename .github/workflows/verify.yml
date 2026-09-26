@@ -1,0 +1,28 @@
+name: Verify
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  workspace:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust components
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Select toolchain
+        run: rustup default stable
+      - name: Install syscall fault injection tool
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y strace
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --all-features --locked
+      - name: Build
+        run: cargo build --workspace --all-targets --all-features --locked

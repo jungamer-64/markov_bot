@@ -8,8 +8,8 @@ Discord 上の日本語メッセージを学習し、Markov 連鎖で返信す�
 | --- | --- |
 | `markov_bot` | Discord Gateway を受け取り、学習・返信・永続化を行う bot 本体 |
 | `markov-core` | `MarkovChain`、学習ロジック、生成ロジック、`ngram_order` の妥当性検証 |
-| `markov-storage` | v8 `.mkv3` の encode/decode、`StorageSnapshot` JSON 変換 |
-| `markov-storage-cli` | `markov-storage` バイナリを提供し、保存ファイルの inspect / export / import / migrate を行う |
+| `markov-storage` | v8 `.mkv3` の codec、snapshot 変換、排他的な同期付きファイル保存 |
+| `markov-storage-cli` | `markov-storage` バイナリを提供し、保存ファイルの inspect / export / import を行う |
 
 ## 最短セットアップ
 
@@ -39,6 +39,8 @@ cargo run -p markov-storage-cli -- inspect --input data/markov_chain.mkv3
 ```
 
 より詳しい運用フローは [docs/operations.md](docs/operations.md) を参照してください。
+
+保存成功はフィルタ後のモデルのディスク同期完了を意味します。保存失敗時は既定で異常終了します。`.env` の `STORAGE_FAILURE_POLICY=retry` で未保存状態のまま継続し、全量保存を再試行できます。保証対象と復旧方法は [運用ガイド](docs/operations.md) を参照してください。
 
 ## 詳細ドキュメント
 

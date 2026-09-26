@@ -1,7 +1,11 @@
-use std::{env, path::PathBuf, time::Duration};
+use std::{
+    env,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use markov_core::{MaxWords, MinWordsBeforeEos, NgramOrder, Temperature};
-use markov_storage::StorageCompressionMode;
+use markov_storage::{StorageCompressionMode, StorageLimits};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -53,6 +57,12 @@ impl ReplyCooldown {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StorageFailurePolicy {
+    Exit,
+    Retry,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct BotConfig {
     discord_token: DiscordToken,
@@ -60,6 +70,9 @@ pub(crate) struct BotConfig {
     ngram_order: NgramOrder,
     storage_min_edge_count: u64,
     storage_compression: StorageCompressionMode,
+    storage_limits: StorageLimits,
+    storage_failure_policy: StorageFailurePolicy,
+    storage_retry_interval: Duration,
     max_words: MaxWords,
     temperature: Temperature,
     min_words_before_eos: MinWordsBeforeEos,
@@ -85,6 +98,16 @@ impl BotConfig {
 
     pub(crate) const fn storage_compression(&self) -> StorageCompressionMode {
         self.storage_compression
+    }
+
+    pub(crate) const fn storage_limits(&self) -> StorageLimits {
+        self.storage_limits
+    }
+    pub(crate) const fn storage_failure_policy(&self) -> StorageFailurePolicy {
+        self.storage_failure_policy
+    }
+    pub(crate) const fn storage_retry_interval(&self) -> Duration {
+        self.storage_retry_interval
     }
 
     pub(crate) const fn max_words(&self) -> MaxWords {
@@ -137,14 +160,32 @@ impl BotConfig {
         let storage_compression = match get_var("STORAGE_COMPRESSION") {
             Ok(raw) => StorageCompressionMode::parse(raw.as_str())?,
             Err(env::VarError::NotPresent) => StorageCompressionMode::Auto,
-            Err(error) => return Err(ConfigError::ParseError("STORAGE_COMPRESSION".to_owned(), error.to_string())),
+            Err(error) => {
+                return Err(ConfigError::ParseError(
+                    "STORAGE_COMPRESSION".to_owned(),
+                    error.to_string(),
+                ));
+            }
         };
 
-        let max_words_val = env_parse_or_default_with(
-            &mut get_var,
-            "REPLY_MAX_WORDS",
-            MaxWords::DEFAULT.get(),
+        let defaults = StorageLimits::default();
+        let storage_limits = StorageLimits::new(
+            env_parse_or_default_with(
+                &mut get_var,
+                "STORAGE_MAX_FILE_BYTES",
+                defaults.file_bytes(),
+            )?,
+            env_parse_or_default_with(
+                &mut get_var,
+                "STORAGE_MAX_VOCAB_BYTES",
+                defaults.vocab_bytes(),
+            )?,
         )?;
+        let (storage_failure_policy, storage_retry_interval) =
+            storage_failure_policy_with(&mut get_var)?;
+
+        let max_words_val =
+            env_parse_or_default_with(&mut get_var, "REPLY_MAX_WORDS", MaxWords::DEFAULT.get())?;
         let max_words = MaxWords::new(max_words_val)?;
 
         let temperature_val = env_parse_or_default_with(
@@ -178,12 +219,55 @@ impl BotConfig {
             ngram_order,
             storage_min_edge_count,
             storage_compression,
+            storage_limits,
+            storage_failure_policy,
+            storage_retry_interval,
             max_words,
             temperature,
             min_words_before_eos,
             reply_cooldown,
         })
     }
+}
+
+fn storage_failure_policy_with<F>(
+    get_var: &mut F,
+) -> Result<(StorageFailurePolicy, Duration), ConfigError>
+where
+    F: FnMut(&str) -> Result<String, env::VarError>,
+{
+    let storage_failure_policy = match get_var("STORAGE_FAILURE_POLICY") {
+        Ok(raw) => match raw.as_str() {
+            "exit" => StorageFailurePolicy::Exit,
+            "retry" => StorageFailurePolicy::Retry,
+            _ => {
+                return Err(ConfigError::ParseError(
+                    "STORAGE_FAILURE_POLICY".into(),
+                    "expected exit|retry".into(),
+                ));
+            }
+        },
+        Err(env::VarError::NotPresent) => StorageFailurePolicy::Exit,
+        Err(error) => {
+            return Err(ConfigError::ParseError(
+                "STORAGE_FAILURE_POLICY".into(),
+                error.to_string(),
+            ));
+        }
+    };
+    let retry_seconds = env_parse_or_default_with(get_var, "STORAGE_RETRY_INTERVAL_SECS", 30_u64)?;
+    if retry_seconds == 0
+        || Instant::now()
+            .checked_add(Duration::from_secs(retry_seconds))
+            .is_none()
+    {
+        return Err(ConfigError::ParseError(
+            "STORAGE_RETRY_INTERVAL_SECS".into(),
+            "must be positive and representable by the monotonic clock".into(),
+        ));
+    }
+    let storage_retry_interval = Duration::from_secs(retry_seconds);
+    Ok((storage_failure_policy, storage_retry_interval))
 }
 
 fn required_env_with<F>(get_var: &mut F, key: &str) -> Result<String, ConfigError>
@@ -209,7 +293,9 @@ where
     T::Err: std::fmt::Display,
 {
     match get_var(key) {
-        Ok(raw) => raw.parse::<T>().map_err(|e| ConfigError::ParseError(key.to_owned(), e.to_string())),
+        Ok(raw) => raw
+            .parse::<T>()
+            .map_err(|e| ConfigError::ParseError(key.to_owned(), e.to_string())),
         Err(env::VarError::NotPresent) => Ok(default),
         Err(error) => Err(ConfigError::ParseError(key.to_owned(), error.to_string())),
     }
@@ -233,7 +319,10 @@ mod tests {
         if condition {
             Ok(())
         } else {
-            Err(super::ConfigError::ParseError("test".to_owned(), message.to_owned()))
+            Err(super::ConfigError::ParseError(
+                "test".to_owned(),
+                message.to_owned(),
+            ))
         }
     }
 
@@ -286,9 +375,7 @@ mod tests {
             "ngram order 7 should be accepted",
         )?;
         ensure_eq(
-            &sixteen
-                .ngram_order()
-                .get(),
+            &sixteen.ngram_order().get(),
             &16,
             "ngram order 16 should be accepted",
         )?;
@@ -301,5 +388,48 @@ mod tests {
             config_from_pairs(&[("DISCORD_TOKEN", "token"), ("MARKOV_NGRAM_ORDER", "0")]).is_err(),
             "ngram order 0 should be rejected",
         )
+    }
+    #[test]
+    fn storage_policy_defaults_and_overrides() -> Result<(), super::ConfigError> {
+        let default = config_from_pairs(&[("DISCORD_TOKEN", "token")])?;
+        ensure_eq(
+            &default.storage_failure_policy(),
+            &super::StorageFailurePolicy::Exit,
+            "default policy",
+        )?;
+        ensure_eq(
+            &default.storage_retry_interval().as_secs(),
+            &30,
+            "default retry interval",
+        )?;
+        let custom = config_from_pairs(&[
+            ("DISCORD_TOKEN", "token"),
+            ("STORAGE_FAILURE_POLICY", "retry"),
+            ("STORAGE_RETRY_INTERVAL_SECS", "2"),
+            ("STORAGE_MAX_FILE_BYTES", "1024"),
+            ("STORAGE_MAX_VOCAB_BYTES", "512"),
+        ])?;
+        ensure_eq(
+            &custom.storage_failure_policy(),
+            &super::StorageFailurePolicy::Retry,
+            "retry policy",
+        )?;
+        ensure_eq(
+            &custom.storage_limits().file_bytes(),
+            &1024,
+            "file byte limit",
+        )?;
+        for (key, value) in [
+            ("STORAGE_FAILURE_POLICY", "ignore"),
+            ("STORAGE_RETRY_INTERVAL_SECS", "0"),
+            ("STORAGE_MAX_FILE_BYTES", "0"),
+            ("STORAGE_MAX_VOCAB_BYTES", "0"),
+        ] {
+            ensure(
+                config_from_pairs(&[("DISCORD_TOKEN", "token"), (key, value)]).is_err(),
+                "invalid storage configuration",
+            )?;
+        }
+        Ok(())
     }
 }

@@ -4,9 +4,9 @@ use rand::Rng;
 
 use crate::{
     BOS_ID, Count, EOS_ID, MarkovError, NgramOrder, Prefix, TokenId,
-    token::TokenRegistry,
     options::{EosPolicy, GenerationOptions, Temperature},
     sampling,
+    token::TokenRegistry,
 };
 
 #[derive(Debug)]
@@ -17,8 +17,13 @@ impl Models {
         Ok(Self(vec![HashMap::new(); order.as_usize()?]))
     }
 
-    fn get_mut(&mut self, index: usize) -> Result<&mut HashMap<Prefix, HashMap<TokenId, Count>>, MarkovError> {
-        self.0.get_mut(index).ok_or(MarkovError::ModelIndexOutOfBounds)
+    fn get_mut(
+        &mut self,
+        index: usize,
+    ) -> Result<&mut HashMap<Prefix, HashMap<TokenId, Count>>, MarkovError> {
+        self.0
+            .get_mut(index)
+            .ok_or(MarkovError::ModelIndexOutOfBounds)
     }
 
     fn get(&self, index: usize) -> Result<&HashMap<Prefix, HashMap<TokenId, Count>>, MarkovError> {
@@ -86,6 +91,33 @@ impl MarkovChain {
             )));
         }
 
+        for (index, model) in models.iter().enumerate() {
+            for (prefix, edges) in model {
+                validate_prefix(prefix, index + 1, &registry)?;
+                if edges.is_empty() {
+                    return Err(MarkovError::Boundary("model prefix has no edges".into()));
+                }
+                for (next, count) in edges {
+                    if registry.get_token(*next).is_none() || count.get() == 0 {
+                        return Err(MarkovError::Boundary(
+                            "invalid edge token or zero count".into(),
+                        ));
+                    }
+                }
+                checked_total(edges.values())?;
+            }
+        }
+        // Starts seed generation independently of model order; missing higher-order
+        // transitions use the normal lower-order fallback.
+        for (prefix, count) in &starts {
+            validate_prefix(prefix, order.as_usize()?, &registry)?;
+            if count.get() == 0 {
+                return Err(MarkovError::Boundary(
+                    "start requires positive count".into(),
+                ));
+            }
+        }
+        checked_total(starts.values())?;
         Ok(Self {
             order,
             registry,
@@ -98,7 +130,7 @@ impl MarkovChain {
     /// Returns `MarkovError::Boundary` if training fails due to internal inconsistency.
     pub fn train_tokens(&mut self, tokens: &[String]) -> Result<(), MarkovError> {
         if tokens.is_empty() {
-            return Ok(())
+            return Ok(());
         }
 
         let order_usize = self.order.as_usize()?;
@@ -110,7 +142,9 @@ impl MarkovChain {
         ids.push(EOS_ID);
 
         // Update starts
-        let start_range = ids.get(0..order_usize).ok_or(MarkovError::StartPrefixRangeError)?;
+        let start_range = ids
+            .get(0..order_usize)
+            .ok_or(MarkovError::StartPrefixRangeError)?;
         let start_prefix = Prefix::new(start_range.to_vec());
         let start_count = self.starts.entry(start_prefix).or_insert(Count::ZERO);
         *start_count = start_count.saturating_add(1);
@@ -121,7 +155,9 @@ impl MarkovChain {
 
             for order_val in 1..=order_usize {
                 let prefix_start = order_usize - order_val;
-                let prefix_range = window.get(prefix_start..order_usize).ok_or(MarkovError::InvalidTrainingPrefixRange)?;
+                let prefix_range = window
+                    .get(prefix_start..order_usize)
+                    .ok_or(MarkovError::InvalidTrainingPrefixRange)?;
                 let prefix = Prefix::new(prefix_range.to_vec());
                 let model = self.models.get_mut(order_val - 1)?;
                 increment_nested_count(model, prefix, next);
@@ -140,7 +176,8 @@ impl MarkovChain {
             return None;
         }
 
-        let mut context = sampling::choose_weighted_prefix(&self.starts, rng, options.temperature())?;
+        let mut context =
+            sampling::choose_weighted_prefix(&self.starts, rng, options.temperature())?;
         let mut generated = Vec::new();
 
         self.seed_generated_tokens_from_context(
@@ -278,6 +315,33 @@ impl MarkovChain {
     }
 }
 
+fn validate_prefix(
+    prefix: &Prefix,
+    order: usize,
+    registry: &TokenRegistry,
+) -> Result<(), MarkovError> {
+    if prefix.len() != order
+        || prefix
+            .as_slice()
+            .iter()
+            .any(|id| registry.get_token(*id).is_none())
+    {
+        return Err(MarkovError::Boundary(
+            "invalid prefix length or token reference".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn checked_total<'a>(mut counts: impl Iterator<Item = &'a Count>) -> Result<(), MarkovError> {
+    counts.try_fold(0_u64, |total, count| {
+        total
+            .checked_add(count.get())
+            .ok_or_else(|| MarkovError::Boundary("count total overflow".into()))
+    })?;
+    Ok(())
+}
+
 fn increment_nested_count(
     model: &mut HashMap<Prefix, HashMap<TokenId, Count>>,
     prefix: Prefix,
@@ -291,10 +355,10 @@ fn increment_nested_count(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{ensure, ensure_eq};
+    use crate::{MaxWords, MinWordsBeforeEos, Temperature};
     use rand::SeedableRng;
     use rand::rngs::StdRng;
-    use crate::{MaxWords, MinWordsBeforeEos, Temperature};
-    use crate::test_support::{ensure, ensure_eq};
 
     #[test]
     fn new_chain_has_correct_ngram_order() -> Result<(), MarkovError> {
@@ -355,7 +419,9 @@ mod tests {
 
         ensure(
             high_b > low_b,
-            &format!("higher temperature should increase sampling frequency of the rarer token (low_b: {low_b}, high_b: {high_b})"),
+            &format!(
+                "higher temperature should increase sampling frequency of the rarer token (low_b: {low_b}, high_b: {high_b})"
+            ),
         )?;
         Ok(())
     }
@@ -369,11 +435,8 @@ mod tests {
         let mut hits = 0_usize;
 
         for _ in 0..sample_count {
-            let options = GenerationOptions::new(
-                MaxWords::new(1)?,
-                temperature,
-                MinWordsBeforeEos::new(0),
-            )?;
+            let options =
+                GenerationOptions::new(MaxWords::new(1)?, temperature, MinWordsBeforeEos::new(0))?;
             let sentence = chain.generate_sentence_with_options(rng, options);
             if sentence.as_deref() == Some("b") {
                 hits += 1;

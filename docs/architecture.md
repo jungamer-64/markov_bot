@@ -1,56 +1,40 @@
 # アーキテクチャ
 
-このワークスペースは、Discord bot の実行系と Markov 連鎖の中核ロジック、保存形式、保守用 CLI を分離しています。実装変更時は責務の境界を崩さず、公開面を最小限に保つ前提です。
+Discord 接続、Markov モデル、保存形式、ファイル永続化を責務ごとに分離します。
 
-## 責務分担
-
-| package / crate | 主な責務 |
+| package | 責務 |
 | --- | --- |
-| `markov_bot` | 環境変数読込、Discord 接続、メッセージ受信、学習トリガ、返信、保存 |
-| `markov-core` | `MarkovChain`、学習 (`train_tokens`)、生成 (`generate_sentence_with_options`) |
-| `markov-storage` | `.mkv3` v8 reader / writer、`StorageSnapshot` の JSON 変換、保存形式 validation |
-| `markov-storage-cli` | v6 / v8 ファイルの inspect、JSON export / import、v6 から v8 への migrate |
+| `markov_bot` | 設定、Discord 接続、学習・返信、保存失敗の運用方針、終了管理 |
+| `markov-core` | 語彙、モデルの意味的整合性、学習と生成 |
+| `markov-storage` | I/O を持たない `Codec`、JSON 用 `StorageSnapshot`、排他的な `FileStore` |
+| `markov-storage-cli` | v8 ファイルの inspect、JSON export / import |
 
-## 起動シーケンス
+## 起動とメッセージ処理
 
-1. `markov_bot` は起動時に `.env` を自動読込し、`BotConfig` を構築します。
-2. Discord API から現在の bot user と application を取得し、`/set_channel` コマンドを登録します。
-3. `DiscordHandler::new` が `MARKOV_DATA_PATH` を読み込みます。
-   - ファイルが存在しない場合は空の `MarkovChain` を新規生成します。
-   - ファイルは存在するが保存済み `ngram_order` が実行時設定と不一致の場合、起動は失敗します。
-4. Gateway の `MessageCreate` と `InteractionCreate` を購読し、以後の学習と返信をイベント駆動で処理します。
+bot は設定を読み、Discord の user/application を取得してコマンドを登録します。モデル worker は保存先の writer lease を取得し、保存済みファイルを復元します。欠損だけが空モデルの開始条件で、破損・権限不足・次数不一致は起動エラーです。
 
-## メッセージ処理フロー
+`/set_channel` で選択したチャンネルの通常ユーザーのメッセージを学習します。URL・mention を除外して日本語を分割し、形態素解析が使えない場合は Unicode word segmentation にフォールバックします。空でない token 列の学習後に保存し、クールダウンを満たせば同じモデルから返信を生成します。生成できなければ固定の学習中メッセージを返します。
 
-1. `/set_channel` が実行されるまで、bot は対象チャンネルを持ちません。
-2. 対象チャンネルに届いたユーザーメッセージだけが処理対象になります。bot 自身と他 bot の投稿は無視します。
-3. `Tokenizer` はまず URL と Discord mention 風トークンを除去し、Lindera (`ipadic`) で形態素分割を試みます。
-4. Lindera が使えない場合は Unicode word segmentation にフォールバックします。
-5. 空でない token 列だけを `MarkovChain::train_tokens` に流し込み、学習後に `.mkv3` へ保存します。
-6. 返信クールダウンが切れていれば、現在の chain を snapshot として複製し、`GenerationOptions` を使って返信文を生成します。生成できない場合は固定フォールバック文を返します。
+モデル、保存先、保存状態、返信時刻、対象チャンネルは単一の blocking worker が所有します。encode・圧縮・同期 I/O は非同期 runtime の executor 上で実行しません。フロント側は上限付き command queue を使い、満杯なら明示エラーを返します。モデルを毎回複製する必要はありません。
 
-## ランタイム状態
+main は worker の終了結果を監視します。正常終了・終了シグナルでは command sender を閉じ、受理済み処理を drain して worker を join します。worker の致命的エラーは main に伝わり、非ゼロ終了になります。要求側の取消は、受理済みの学習や保存を取り消しません。対象チャンネルは永続化せず、再起動後に設定し直します。
 
-`DiscordHandler` が保持する共有状態は次の 3 つです。
+## モデルと codec の境界
 
-- 学習済み `MarkovChain`
-- 最後に返信した時刻
-- 対象チャンネル ID
+語彙列が token ID の唯一の正本であり、検索用 index はそこから構築します。`MarkovChain` の復元 constructor は prefix 長、token 参照、正の count、非空の edge 集合、count 合計を検証します。start は生成開始 context であり、最高次数の遷移がなくても低次数へのフォールバックで使用できます。binary/JSON reader は重複レコードを検出してから domain の構築へ渡し、後勝ちの map 挿入で不正データを隠しません。
 
-対象チャンネル ID はメモリ上のみで保持され、保存ファイルには書き込まれません。プロセス再起動後は毎回 `/set_channel` を再実行する必要があります。
+`Codec` はファイルサイズと展開語彙サイズの独立した `StorageLimits` を受け取ります。byte 上限はモデル全体の resident memory 上限を意味しません。保存にも同じ上限を適用します。圧縮選択方針の `Auto` と、保存済みファイルの圧縮方式は別の型です。
 
-## `ngram_order` と保存層の整合性
+`ngram_order` は学習・生成・保存・復元を貫く値です。各次数のモデルを保存し、bot は実行時の次数と一致しないファイルを復元しません。CLI はファイル自身の次数で検査します。
 
-- `markov-core` は `ngram_order >= 1` を必須条件として扱い、学習時には `order = 1..=ngram_order` の全モデルを更新します。
-- `markov-storage` は保存時に header へ `ngram_order` を明記し、`Starts` と各 `Model(order)` section をその値に応じて可変個数で出力します。
-- 読込時は保存ファイルの `ngram_order` と runtime の `MARKOV_NGRAM_ORDER` が一致しない限り復元しません。
+## 永続化と失敗の契約
 
-このため、`ngram_order` は単なる生成パラメータではなく、学習・保存・復元の全レイヤーを貫く構成値です。
+正本は保存先の `.mkv3` です。`FileStore` は writer lease と保存先を所有し、一時ファイルの準備・同期・置換・名前の同期を終えて初めて保存成功を返します。失敗には公開前、公開済みで耐久性未確認、公開結果不明の区別があります。途中失敗を「ディスクは変更されていない」と解釈しません。
 
-## 永続化の考え方
+別プロセスも同じ sidecar lock を使います。置換のたびに inode が変わるモデル本体にはロックしません。sidecar は削除しない運用とし、writer が保持したまま消すことは禁止です。`.lock` は lease 用の予約拡張子で、出力先に使えません。保存先ディレクトリの移動・入替えや、lease を無視する外部 writer との協調は保証対象外です。
 
-- bot 本体は `markov-storage::encode_v8_chain` / `decode_v8_chain` だけを使い、過去 format を直接扱いません。
-- v6 の読込互換は `markov-storage-cli` に閉じ込められており、bot 本体と `markov-storage` crate は v8 のみを前提にしています。
-- `STORAGE_MIN_EDGE_COUNT` は保存時フィルタです。閾値未満の edge と、それに依存する start prefix は保存されないため、再起動後のモデルはこのフィルタ後の状態から再開します。
+保存失敗の既定動作は停止です。明示的な retry 設定では、I/O 失敗後もメモリ上の学習を保持して返信を続けます。未保存状態には次回試行期限があり、無通信時にも最新モデル全体を再保存します。再試行待ちの間の学習もその保存に含まれます。期限は追加メッセージで先送りしません。学習の再実行ではないため count は二重加算されません。形式不整合・上限超過は再試行せず停止します。正常終了時は未保存なら最後に一度保存し、その失敗も終了コードへ反映します。
 
-format の詳細は [storage-format.md](storage-format.md)、日常運用は [operations.md](operations.md) を参照してください。
+`STORAGE_MIN_EDGE_COUNT` は保存時の意図的な損失フィルタです。閾値未満の edge と、それによって参照先を失う最高次数の start を除去します。メモリ上のモデルにはフィルタを適用せず、再起動後はフィルタ後の状態から学習を再開します。保存成功の耐久性保証もフィルタ後のモデルに対するものです。
+
+形式の契約は [storage-format.md](storage-format.md)、OS ごとの前提と復旧手順は [operations.md](operations.md) を参照してください。

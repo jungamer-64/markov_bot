@@ -72,9 +72,7 @@ fn choose_weighted_key_default<K, R: Rng + ?Sized>(
 ) -> Option<K> {
     let weighted_entries = entries
         .into_iter()
-        .filter_map(|(key, count)| {
-            default_sampling_weight(count).map(|weight| (key, weight))
-        })
+        .filter_map(|(key, count)| default_sampling_weight(count).map(|weight| (key, weight)))
         .collect::<Vec<_>>();
 
     let alias_table = AliasTable::build(weighted_entries)?;

@@ -38,6 +38,12 @@ pub struct TokenRegistry {
     id_to_token: Vec<String>,
 }
 
+impl Default for TokenRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TokenRegistry {
     #[must_use]
     pub fn new() -> Self {
@@ -63,8 +69,9 @@ impl TokenRegistry {
             return Ok(*id);
         }
 
-        let id_val = u32::try_from(self.id_to_token.len())
-            .map_err(|err| MarkovError::Boundary(format!("Token count exceeded u32::MAX: {err}")))?;
+        let id_val = u32::try_from(self.id_to_token.len()).map_err(|err| {
+            MarkovError::Boundary(format!("Token count exceeded u32::MAX: {err}"))
+        })?;
         let id = TokenId::new(id_val);
 
         self.id_to_token.push(token.to_owned());
@@ -104,7 +111,33 @@ impl TokenRegistry {
         self.id_to_token.is_empty()
     }
 
-
+    /// Builds the token index from its sole source of truth, the ordered vocabulary.
+    ///
+    /// # Errors
+    /// Rejects duplicate tokens, missing reserved tokens, and unrepresentable IDs.
+    pub fn from_tokens(tokens: Vec<String>) -> Result<Self, MarkovError> {
+        if tokens.first().map(String::as_str) != Some(BOS_TOKEN)
+            || tokens.get(1).map(String::as_str) != Some(EOS_TOKEN)
+        {
+            return Err(MarkovError::Boundary(
+                "reserved tokens must occupy IDs 0 and 1".into(),
+            ));
+        }
+        let mut index = HashMap::with_capacity(tokens.len());
+        for (position, token) in tokens.iter().enumerate() {
+            let id = TokenId::new(
+                u32::try_from(position)
+                    .map_err(|error| MarkovError::Boundary(error.to_string()))?,
+            );
+            if index.insert(token.clone(), id).is_some() {
+                return Err(MarkovError::Boundary("duplicate vocabulary token".into()));
+            }
+        }
+        Ok(Self {
+            token_to_id: index,
+            id_to_token: tokens,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

@@ -1,3 +1,4 @@
+use crate::Codec;
 use std::fs;
 
 use markov_core::{MarkovChain, NgramOrder};
@@ -5,8 +6,7 @@ use tempfile::{Builder, TempPath};
 
 use crate::{
     CHECKSUM_OFFSET, DESCRIPTOR_SIZE, HEADER_SIZE, SECTION_METADATA_COUNT, StorageCompressionMode,
-    StorageError, compute_checksum, decode_chain, descriptor_count_for_ngram_order,
-    encode_chain,
+    StorageError, compute_checksum, descriptor_count_for_ngram_order,
 };
 
 pub(super) const TEST_MIN_EDGE_COUNT: u64 = 1;
@@ -72,7 +72,11 @@ pub(super) fn write_sample_file_with_settings(
     compression_mode: StorageCompressionMode,
 ) -> Result<TempPath, StorageError> {
     let file_path = temp_file_path(prefix)?;
-    let payload = encode_chain(chain, markov_core::Count::new(min_edge_count), compression_mode)?;
+    let payload = Codec::default().encode_chain(
+        chain,
+        markov_core::Count::new(min_edge_count),
+        compression_mode,
+    )?;
     fs::write(&file_path, payload)?;
     Ok(file_path)
 }
@@ -82,10 +86,12 @@ pub(super) fn load_sample_file(
     expected_ngram_order: NgramOrder,
 ) -> Result<MarkovChain, StorageError> {
     let bytes = fs::read(path)?;
-    decode_chain(bytes.as_slice(), expected_ngram_order)
+    Codec::default().decode_chain(bytes.as_slice(), expected_ngram_order)
 }
 
-pub(super) fn sample_chain_with_order(ngram_order: NgramOrder) -> Result<MarkovChain, StorageError> {
+pub(super) fn sample_chain_with_order(
+    ngram_order: NgramOrder,
+) -> Result<MarkovChain, StorageError> {
     let mut chain = MarkovChain::new(ngram_order)?;
     for tokens in [
         vec!["a", "b", "c", "d"],
@@ -127,12 +133,13 @@ pub(super) fn descriptor(bytes: &[u8], index: usize) -> Result<DescriptorView, S
 
 pub(super) fn descriptor_count(bytes: &[u8]) -> Result<usize, StorageError> {
     let section_count = read_u64_at(bytes, SECTION_COUNT_OFFSET)?;
-    usize::try_from(section_count).map_err(|_error| StorageError::Format("section count should fit usize".to_owned()))
+    usize::try_from(section_count)
+        .map_err(|_error| StorageError::Format("section count should fit usize".to_owned()))
 }
 
 pub(super) fn model_descriptor_index(bytes: &[u8], order: usize) -> Result<usize, StorageError> {
-    let expected_flags =
-        u32::try_from(order).map_err(|_error| StorageError::Format("order exceeds u32 range".to_owned()))?;
+    let expected_flags = u32::try_from(order)
+        .map_err(|_error| StorageError::Format("order exceeds u32 range".to_owned()))?;
     let count = descriptor_count(bytes)?;
 
     for index in 0..count {
@@ -142,7 +149,9 @@ pub(super) fn model_descriptor_index(bytes: &[u8], order: usize) -> Result<usize
         }
     }
 
-    Err(StorageError::Format(format!("descriptor not found for model order {order}")))
+    Err(StorageError::Format(format!(
+        "descriptor not found for model order {order}"
+    )))
 }
 
 pub(super) fn section_body_offset(bytes: &[u8], index: usize) -> Result<usize, StorageError> {
@@ -152,13 +161,15 @@ pub(super) fn section_body_offset(bytes: &[u8], index: usize) -> Result<usize, S
 
 pub(super) fn descriptor_flags_offset(index: usize) -> Result<usize, StorageError> {
     let offset = descriptor_start_offset(index)?;
-    offset.checked_add(4)
+    offset
+        .checked_add(4)
         .ok_or_else(|| StorageError::Format("descriptor flags offset overflow".to_owned()))
 }
 
 pub(super) fn descriptor_size_offset(index: usize) -> Result<usize, StorageError> {
     let offset = descriptor_start_offset(index)?;
-    offset.checked_add(16)
+    offset
+        .checked_add(16)
         .ok_or_else(|| StorageError::Format("descriptor size offset overflow".to_owned()))
 }
 
@@ -220,9 +231,9 @@ pub(super) fn write_u64_at(
 fn descriptor_start_offset(index: usize) -> Result<usize, StorageError> {
     HEADER_SIZE
         .checked_add(
-            index
-                .checked_mul(DESCRIPTOR_SIZE)
-                .ok_or_else(|| StorageError::Format("descriptor start offset overflow".to_owned()))?,
+            index.checked_mul(DESCRIPTOR_SIZE).ok_or_else(|| {
+                StorageError::Format("descriptor start offset overflow".to_owned())
+            })?,
         )
         .ok_or_else(|| StorageError::Format("descriptor start offset overflow".to_owned()))
 }
