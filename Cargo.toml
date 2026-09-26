@@ -10,23 +10,23 @@ authors = ["jungamer-64"]
 license = "MIT"
 
 [dependencies]
-anyhow = "1.0.104"
-thiserror = "2.0.21"
-dotenvy = "0.15.7"
+anyhow = "1.0"
+thiserror = "2.0"
+dotenvy = "0.15"
 markov-core = { path = "markov-core" }
 markov-storage = { path = "markov-storage" }
-lindera = { version = "6.0.0", features = ["embed-ipadic"] }
-rand = "0.10.3"
-rustls = "0.23.45"
-tokio = { version = "1.53.1", features = ["full"] }
-twilight-gateway = "0.17.1"
-twilight-http = "0.17.1"
-twilight-model = "0.17.1"
-twilight-standby = "0.17.0"
-unicode-segmentation = "1.13.3"
+lindera = { version = "6.0", features = ["embed-ipadic"] }
+rand = "0.10"
+rustls = "0.23"
+tokio = { version = "1.53", features = ["full"] }
+twilight-gateway = "0.17"
+twilight-http = "0.17"
+twilight-model = "0.17"
+twilight-standby = "0.17"
+unicode-segmentation = "1.13"
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile = "3"
 
 [lints]
 workspace = true

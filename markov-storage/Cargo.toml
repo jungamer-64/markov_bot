@@ -5,24 +5,24 @@ edition = "2024"
 
 [dependencies]
 markov-core = { path = "../markov-core" }
-serde = { version = "1.0.229", features = ["derive"] }
-thiserror = "2.0.21"
-zstd = "0.14.0"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+zstd = "0.14"
 # Delegates unpredictable exclusive temporary creation and cleanup; publication,
 # locking, limits, and durability outcomes remain owned by FileStore.
-tempfile = "3.27.0"
+tempfile = "3"
 # OS file identity (including hard links), used only at the CLI path boundary.
-same-file = "1.0.6"
+same-file = "1.0"
 
 [dev-dependencies]
-rand = "0.10.3"
+rand = "0.10"
 
 [lints]
 workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Safe MoveFileExW WRITE_THROUGH boundary; no codec or state ownership delegated.
-atomicwrites = "0.4.4"
+atomicwrites = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-rustix = { version = "1.1.5", features = ["fs"] }
+rustix = { version = "1.1", features = ["fs"] }

@@ -8,13 +8,13 @@ name = "markov-storage"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.104"
-clap = { version = "4.6.7", features = ["derive"] }
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive"] }
 markov-storage = { path = "../markov-storage" }
-serde_json = "1.0.151"
+serde_json = "1.0"
 
 [dev-dependencies]
-tempfile = "3.27.0"
+tempfile = "3"
 
 [lints]
 workspace = true
